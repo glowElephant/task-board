@@ -195,8 +195,8 @@ async function open(id, keepScroll) {
 
 function saveRow(onSave, onSend, hint) {
   const ok = h('span', { className: 'ok' });
-  const save = h('button', { type: 'button', textContent: '저장' });
-  const send = onSend ? h('button', { type: 'button', className: 'primary', textContent: '보내기' }) : null;
+  const save = h('button', { type: 'button', textContent: '저장', title: '문서에만 적습니다 — 세션은 안 깨웁니다' });
+  const send = onSend ? h('button', { type: 'button', className: 'primary', textContent: '보내기', title: '저장하고 그 세션을 깨웁니다 — 세션이 읽고 반영' }) : null;
   const run = async (fn, label) => { try { await fn(); ok.textContent = `${label} ${new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}`; } catch (e) { ok.textContent = '실패: ' + e.message; } };
   save.onclick = () => run(onSave, '저장됨');
   if (send) send.onclick = () => run(onSend, '보냄 —세션이 읽습니다');
@@ -222,7 +222,7 @@ function editor(key, value, tid, placeholder, onSave, onSend) {
   ta.addEventListener('input', () => { drafts[key] = ta.value; });
   if (tid) attachPaste(ta, tid);
   const done = fn => async () => { cur = await fn(ta.value); delete drafts[key]; await refreshList(); renderTask(); };
-  const r = saveRow(done(onSave), onSend && done(onSend), tid ? '이미지: Ctrl+V · 끌어놓기 · Ctrl+Enter 보내기' : '');
+  const r = saveRow(done(onSave), onSend && done(onSend), tid ? '저장 = 여기에만 · 보내기 = 세션이 읽고 반영 · 이미지 Ctrl+V · Ctrl+Enter 보내기' : '');
   ta.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && r.send) { e.preventDefault(); r.send.click(); }
     if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); r.save.click(); }
