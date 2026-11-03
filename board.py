@@ -15,7 +15,7 @@
 
 설정: 환경변수 > ~/.config/board/env (KEY=VALUE). BOARD_DIR(기본 ~/board) · BOARD_PORT(기본 8770) ·
 BOARD_EXTRA(옛 txt 문서 폴더, os.pathsep 로 여럿 — 탭으로 보여 주기만 한다) ·
-BOARD_NOTIFY(0 이면 PC 알림 끔) · BOARD_AWAY_MIN(입력 없이 몇 분이면 자리 비움, 기본 5).
+BOARD_NOTIFY(0 이면 PC 알림 끔) · BOARD_AWAY_MIN(입력 없이 몇 분이면 자리 비움, 기본 30).
 """
 import argparse
 import datetime
@@ -52,7 +52,7 @@ BOARD = pathlib.Path(CFG.get("BOARD_DIR") or HOME / "board").expanduser()
 PORT = int(CFG.get("BOARD_PORT") or 8770)
 EXTRA = [pathlib.Path(p).expanduser() for p in (CFG.get("BOARD_EXTRA") or "").split(os.pathsep) if p]
 NOTIFY = (CFG.get("BOARD_NOTIFY") or "1") != "0"
-AWAY_MIN = float(CFG.get("BOARD_AWAY_MIN") or 5)
+AWAY_MIN = float(CFG.get("BOARD_AWAY_MIN") or 30)
 WEB = pathlib.Path(__file__).resolve().parent / "web"
 
 FM = re.compile(r"\A---\n(.*?)\n---\n?", re.S)
@@ -418,22 +418,22 @@ def _gdbus(dest, path, method):
 
 
 def presence():
-    """watching = 확인판 창을 보는 중 · desk = PC 앞(다른 일) · away = 화면 잠김 또는 AWAY_MIN 분 입력 없음.
-    GNOME 이 아니면 잠김·유휴를 못 읽어 desk 로 본다."""
+    """watching = 확인판 창을 보는 중 · desk = PC 앞(다른 일) · away = AWAY_MIN 분 넘게 키보드·마우스 입력 없음.
+    잠금은 따로 안 본다 — 잠그자마자 폰이 울리면 잠깐 자리 뜰 때도 울려서 30분 뒤부터로 했다(11-03 사용자).
+    잠겨 있어도 유휴 시간은 계속 쌓인다. GNOME 이 아니면 유휴를 못 읽어 desk 로 본다."""
     t = time.time()
     if t - _seen["at"] < 1.5:
         return {"state": _seen["state"], "away_since": _seen["away_since"]}
-    locked = _gdbus("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver", "org.gnome.ScreenSaver.GetActive") == "true"
     idle = _gdbus("org.gnome.Mutter.IdleMonitor", "/org/gnome/Mutter/IdleMonitor/Core", "org.gnome.Mutter.IdleMonitor.GetIdletime")
     idle_s = int(idle) / 1000 if idle and idle.isdigit() else 0
-    if locked or idle_s >= AWAY_MIN * 60:
+    if idle_s >= AWAY_MIN * 60:
         state = "away"
     elif t - _seen["beat"] < 12:
         state = "watching"
     else:
         state = "desk"
     if state == "away" and _seen["away_since"] is None:
-        _seen["away_since"] = round(t - (0 if locked else idle_s))
+        _seen["away_since"] = round(t - idle_s)
     elif state != "away":
         _seen["away_since"] = None
     _seen.update(at=t, state=state)
