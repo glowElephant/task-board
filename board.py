@@ -232,12 +232,14 @@ def summary(tid):
         return {"id": tid, "kind": "txt", "title": text.split("\n", 1)[0].strip()[:80] or f.name,
                 "session": "txt 문서 · " + str(f.parent).replace(str(HOME), "~"),
                 "status": "진행 중" if mine or re.search(r"^\s*\[[ ~]\]", text, re.M) or recent else "끝",
-                "mine": mine, "waiting": 0, "mtime": f.stat().st_mtime}
+                "mine": mine, "waiting": 0, "mtime": f.stat().st_mtime,
+                "asks": [m.group(1).strip() for m in re.finditer(r"^\s*\[ \]\s*(.+)$", text, re.M)]}
     meta, body = split(text)
     items = [b for b in parse(body) if b["type"] == "item"]
     return {"id": tid, "kind": "task", "title": meta.get("title") or tid, "session": meta.get("session", ""),
             "status": "끝" if meta.get("status", "") in DONE else "진행 중",
             "mine": sum(i["turn"] == "me" for i in items), "waiting": sum(i["turn"] == "claude" for i in items),
+            "asks": [f"{i['id']}. {i['title']}" for i in items if i["turn"] == "me"],
             "mtime": f.stat().st_mtime}
 
 

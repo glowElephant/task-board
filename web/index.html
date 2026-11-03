@@ -34,25 +34,43 @@ button:hover { border-color: var(--muted); }
 button.primary { background: var(--me); border-color: var(--me); color: #fff; font-weight: 600; }
 button:disabled { opacity: .5; cursor: default; }
 
-/* 탭 줄 — gedit 탭처럼 */
-header { position: sticky; top: 0; z-index: 5; background: var(--surface); border-bottom: 1px solid var(--line);
-  display: flex; align-items: stretch; gap: 8px; padding: 0 12px; }
-.brand { font-weight: 700; letter-spacing: .02em; display: flex; align-items: center; padding-right: 8px; white-space: nowrap; }
-#tabs { display: flex; flex: 1; overflow-x: auto; scrollbar-width: thin; }
-.tab { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none; padding: 10px 14px 8px;
-  display: flex; align-items: center; gap: 8px; white-space: nowrap; max-width: 300px; color: var(--muted); }
-.tab:hover { color: var(--ink); }
-.tab.on { color: var(--ink); border-bottom-color: var(--me); font-weight: 600; }
-.tab .t { overflow: hidden; text-overflow: ellipsis; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--wait); flex: none; }
+/* 왼쪽: 세션별 묶음 — 작업마다 내 차례 질문 머리를 미리 보여 준다 */
+.app { display: grid; grid-template-columns: clamp(320px, 24vw, 440px) 1fr; height: 100vh; }
+aside { border-right: 1px solid var(--line); background: var(--surface); overflow-y: auto; display: flex; flex-direction: column; }
+.side-head { position: sticky; top: 0; background: var(--surface); z-index: 2; display: flex; align-items: center; gap: 8px;
+  padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.brand { font-weight: 700; letter-spacing: .02em; }
+.side-head .sub { color: var(--muted); font-size: 12px; margin-left: auto; }
+.grp { border-bottom: 1px solid var(--line); }
+.grp-head { width: 100%; border: 0; border-radius: 0; background: none; display: flex; align-items: center; gap: 8px;
+  padding: 9px 14px; font-weight: 650; text-align: left; }
+.grp-head:hover { background: var(--sunk); }
+.grp-head .chev { color: var(--muted); width: 12px; flex: none; transition: transform .12s; }
+.grp-head[aria-expanded="true"] .chev { transform: rotate(90deg); }
+.grp-head .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grp-head .n { color: var(--muted); font-weight: 400; font-size: 12px; }
+.grp-body { padding: 0 8px 8px; display: grid; gap: 4px; }
+.grp-head[aria-expanded="false"] + .grp-body { display: none; }
+.trow { width: 100%; text-align: left; border: 1px solid transparent; border-radius: 8px; background: none; padding: 8px 10px;
+  display: grid; gap: 3px; }
+.trow:hover { background: var(--sunk); }
+.trow.on { background: var(--me-soft); border-color: color-mix(in srgb, var(--me) 40%, var(--line)); }
+.trow .top { display: flex; gap: 8px; align-items: flex-start; }
+.trow .tt { flex: 1; font-weight: 600; font-size: 14px; line-height: 1.4; }
+.trow .asks { margin: 0; padding: 0 0 0 16px; list-style: none; display: grid; gap: 1px; }
+.trow .asks li { font-size: 12.5px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trow .asks li.more { color: var(--muted); }
+.trow .when { font-size: 11.5px; color: var(--muted); padding-left: 16px; font-variant-numeric: tabular-nums; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--wait); flex: none; margin-top: 6px; }
 .dot.me { background: var(--me); }
-.dot.done { background: var(--done); }
 .dot.txt { background: transparent; border: 1.5px solid var(--wait); }
 .count { background: var(--me); color: #fff; border-radius: 9px; font-size: 12px; padding: 0 7px; font-weight: 700;
-  font-variant-numeric: tabular-nums; }
-#doneBtn { align-self: center; white-space: nowrap; }
+  font-variant-numeric: tabular-nums; flex: none; }
+#doneBtn { margin: 12px 14px; align-self: flex-start; }
+#main { overflow-y: auto; }
+@media (max-width: 860px) { .app { grid-template-columns: 1fr; height: auto; } aside { max-height: 50vh; border-right: 0; border-bottom: 1px solid var(--line); } #main { overflow: visible; } }
 
-main { max-width: 980px; margin: 0 auto; padding: 20px 16px 80px; }
+.page { max-width: 1200px; margin: 0 auto; padding: 20px 16px 80px; }
 .top { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
 h1 { font-size: 22px; line-height: 1.35; margin: 4px 0 6px; text-wrap: balance; }
 .meta { color: var(--muted); font-size: 13px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
@@ -106,16 +124,18 @@ details.reopen > summary { color: var(--muted); font-size: 13px; cursor: pointer
 .list .when { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .list .who { color: var(--muted); font-size: 12px; margin-left: auto; white-space: nowrap; }
 .empty { color: var(--muted); padding: 40px 0; text-align: center; }
-@media (prefers-reduced-motion: no-preference) { .tab, button { transition: color .12s, border-color .12s; } }
+@media (prefers-reduced-motion: reduce) { .grp-head .chev { transition: none; } }
 </style>
 </head>
 <body>
-<header>
-  <div class="brand">확인판</div>
-  <nav id="tabs" aria-label="진행 중인 작업"></nav>
-  <button id="doneBtn" type="button">끝난 작업</button>
-</header>
-<main id="main"><p class="empty">불러오는 중…</p></main>
+<div class="app">
+  <aside aria-label="세션별 작업">
+    <div class="side-head"><span class="brand">확인판</span><span id="total"></span><span class="sub" id="sub"></span></div>
+    <div id="groups"></div>
+    <button id="doneBtn" type="button">끝난 작업</button>
+  </aside>
+  <main id="main"><div class="page" id="page"><p class="empty">불러오는 중…</p></div></main>
+</div>
 <script>
 const $ = (s, el = document) => el.querySelector(s);
 const h = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.flat().filter(k => k != null)); return e; };
@@ -149,25 +169,58 @@ function md(text, tid) {
 }
 function drawMermaid() { const n = [...document.querySelectorAll('.mermaid:not([data-processed])')]; if (n.length) mermaid.run({ nodes: n }).catch(() => {}); }
 
-function sorted() {
-  const open = tasks.filter(t => t.status !== '끝');
-  return open.sort((a, b) => (b.mine > 0) - (a.mine > 0) || (a.kind === 'txt') - (b.kind === 'txt') || b.mtime - a.mtime);
+const store = { get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
+let folded = store.get('board.folded', {});   // 세션별로 사용자가 접고 편 것 — 없으면 내 차례가 있으면 펼침
+
+function groups() {
+  const open = tasks.filter(t => t.status !== '끝'), by = new Map();
+  for (const t of open) {
+    const key = t.kind === 'txt' ? 'txt' : (t.session || '세션 미상');
+    if (!by.has(key)) by.set(key, { key, name: key === 'txt' ? 'txt 문서 (옛 형식)' : shortSession(key), ref: (key.match(/\[([0-9a-f]+)\]$/) || [])[1] || '', items: [] });
+    by.get(key).items.push(t);
+  }
+  const gs = [...by.values()];
+  for (const g of gs) {
+    g.items.sort((a, b) => b.mine - a.mine || b.mtime - a.mtime);
+    g.mine = g.items.reduce((n, t) => n + t.mine, 0);
+    g.last = Math.max(...g.items.map(t => t.mtime));
+  }
+  return gs.sort((a, b) => (a.key === 'txt') - (b.key === 'txt') || b.mine - a.mine || b.last - a.last);
+}
+function taskRow(t) {
+  const on = (view === 'task' || view === 'raw') && cur && cur.id === t.id;
+  const asks = (t.asks || []).slice(0, 3);
+  const more = (t.asks || []).length - asks.length;
+  const b = h('button', { type: 'button', className: 'trow' + (on ? ' on' : ''), title: t.title },
+    h('div', { className: 'top' }, h('span', { className: 'dot ' + (t.kind === 'txt' ? 'txt' : t.mine ? 'me' : '') }),
+      h('span', { className: 'tt', textContent: t.title }), t.mine ? h('span', { className: 'count', textContent: t.mine }) : null),
+    asks.length ? h('ul', { className: 'asks' }, asks.map(q => h('li', { textContent: q, title: q })),
+      more > 0 ? h('li', { className: 'more', textContent: `외 ${more}개` }) : null) : null,
+    h('div', { className: 'when', textContent: when(t.mtime) + (t.mine ? '' : t.waiting ? ' · 세션이 반영 중' : ' · 내 차례 없음') }));
+  b.onclick = () => open(t.id);
+  return b;
 }
 function renderTabs() {
-  const nav = $('#tabs'); nav.replaceChildren();
-  for (const t of sorted()) {
-    const cls = t.kind === 'txt' ? 'txt' : t.mine ? 'me' : '';
-    const b = h('button', { type: 'button', className: 'tab' + (view === 'task' && cur && cur.id === t.id ? ' on' : ''), title: `${t.title}\n${t.session}` },
-      h('span', { className: 'dot ' + cls }), h('span', { className: 't', textContent: t.title }),
-      t.mine ? h('span', { className: 'count', textContent: t.mine }) : null);
-    b.onclick = () => open(t.id);
-    nav.append(b);
+  const box = $('#groups'); box.replaceChildren();
+  for (const g of groups()) {
+    const isOpen = folded[g.key] === undefined ? g.mine > 0 : !folded[g.key];
+    const head = h('button', { type: 'button', className: 'grp-head', ariaExpanded: String(isOpen), title: g.key },
+      h('span', { className: 'chev', textContent: '▸' }), h('span', { className: 'name', textContent: g.name }),
+      h('span', { className: 'n', textContent: g.items.length > 1 ? `작업 ${g.items.length}` : '' }),
+      g.mine ? h('span', { className: 'count', textContent: g.mine }) : null);
+    head.setAttribute('aria-expanded', String(isOpen));
+    head.onclick = () => { folded[g.key] = isOpen; store.set('board.folded', folded); renderTabs(); };
+    box.append(h('section', { className: 'grp' }, head, h('div', { className: 'grp-body' }, g.items.map(taskRow))));
   }
   const done = tasks.filter(t => t.status === '끝').length;
   $('#doneBtn').textContent = `끝난 작업 ${done}`;
   const mine = tasks.filter(t => t.status !== '끝').reduce((n, t) => n + t.mine, 0);
+  $('#total').replaceChildren(...(mine ? [h('span', { className: 'count', textContent: mine })] : []));
+  $('#sub').textContent = `세션 ${groups().filter(g => g.key !== 'txt').length} · 작업 ${tasks.filter(t => t.status !== '끝').length}`;
   document.title = mine ? `(${mine}) 확인판` : '확인판';
 }
+function sorted() { return groups().flatMap(g => g.items); }
 
 async function refreshList() {
   try { tasks = await api('/api/tasks'); } catch { return; }
@@ -183,14 +236,14 @@ async function refreshList() {
 document.addEventListener('focusout', e => { if (stale && e.target.tagName === 'TEXTAREA' && view === 'task') { stale = false; setTimeout(() => open(cur.id, true), 0); } });
 
 async function open(id, keepScroll) {
-  const y = scrollY;
+  const y = $('#main').scrollTop;
   const prev = cur && cur.id;
-  try { cur = await api('/api/task?id=' + encodeURIComponent(id)); } catch (e) { $('#main').replaceChildren(h('p', { className: 'empty', textContent: '없는 작업입니다.' })); return; }
+  try { cur = await api('/api/task?id=' + encodeURIComponent(id)); } catch (e) { $('#page').replaceChildren(h('p', { className: 'empty', textContent: '없는 작업입니다.' })); return; }
   if (prev !== id || view !== 'task') drafts = {};
   view = 'task'; stale = false;
   if (location.hash.slice(1) !== encodeURIComponent(id)) history.replaceState(null, '', '#' + encodeURIComponent(id));
   renderTabs(); renderTask();
-  if (keepScroll) scrollTo(0, y);
+  $('#main').scrollTop = keepScroll ? y : 0;
 }
 
 function saveRow(onSave, onSend, hint) {
@@ -249,7 +302,7 @@ function itemCard(b, tid) {
 }
 
 function renderTask() {
-  const t = cur, main = $('#main');
+  const t = cur, main = $('#page');
   const doneNow = t.status === '끝';
   const head = h('div', { className: 'top' },
     h('div', {}, h('h1', { textContent: t.title }),
@@ -289,14 +342,14 @@ function rawEditor(t) {
 }
 function renderRaw() {
   view = 'raw';
-  $('#main').replaceChildren(h('div', { className: 'top' }, h('h1', { textContent: cur.title + ' — 원문' }),
+  $('#page').replaceChildren(h('div', { className: 'top' }, h('h1', { textContent: cur.title + ' — 원문' }),
     h('div', { className: 'actions' }, h('button', { type: 'button', textContent: '돌아가기', onclick: () => open(cur.id) }))), rawEditor(cur));
 }
 
 function renderDone() {
   view = 'done'; renderTabs();
   const done = tasks.filter(t => t.status === '끝').sort((a, b) => b.mtime - a.mtime);
-  $('#main').replaceChildren(h('h1', { textContent: '끝난 작업' }),
+  $('#page').replaceChildren(h('h1', { textContent: '끝난 작업' }),
     done.length ? h('div', { className: 'list' }, done.map(t => h('button', { type: 'button', onclick: () => open(t.id) },
       h('span', { className: 'when', textContent: when(t.mtime) }), h('span', { textContent: t.title }), h('span', { className: 'who', textContent: shortSession(t.session) }))))
       : h('p', { className: 'empty', textContent: '아직 없습니다.' }));
@@ -307,7 +360,7 @@ $('#doneBtn').onclick = renderDone;
   tasks = await api('/api/tasks');
   const want = decodeURIComponent(location.hash.slice(1));
   const first = tasks.find(t => t.id === want) || sorted()[0];
-  if (first) await open(first.id); else { renderTabs(); $('#main').replaceChildren(h('p', { className: 'empty', textContent: '올라온 작업이 없습니다.' })); }
+  if (first) await open(first.id); else { renderTabs(); $('#page').replaceChildren(h('p', { className: 'empty', textContent: '올라온 작업이 없습니다.' })); }
   setInterval(refreshList, 2000);
 })();
 addEventListener('hashchange', () => { const id = decodeURIComponent(location.hash.slice(1)); if (id && (!cur || id !== cur.id)) open(id); });
