@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>확인판</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
+<style>
+:root {
+  --bg: #f4f5f7; --surface: #ffffff; --sunk: #eef0f3; --ink: #1c2230; --muted: #667085; --line: #dfe3e8;
+  --me: #d9480f; --me-soft: #fff1ea; --wait: #7a8599; --wait-soft: #eef1f5; --done: #2b8a5e; --done-soft: #e8f6ef;
+  --link: #1d5fd1; --mine-bubble: #f3f6fd; --focus: #1d5fd1;
+  --sans: "Pretendard", "Noto Sans KR", "Noto Sans CJK KR", "Apple SD Gothic Neo", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "D2Coding", "Noto Sans Mono CJK KR", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #13161b; --surface: #1b1f26; --sunk: #232831; --ink: #e5e8ee; --muted: #98a2b3; --line: #2d333d;
+  --me: #ff8a5c; --me-soft: #3a2219; --wait: #98a2b3; --wait-soft: #262b34; --done: #4cc38a; --done-soft: #1c3329;
+  --link: #7aa7ff; --mine-bubble: #1f2738; --focus: #7aa7ff;
+} }
+:root[data-theme="dark"] {
+  --bg: #13161b; --surface: #1b1f26; --sunk: #232831; --ink: #e5e8ee; --muted: #98a2b3; --line: #2d333d;
+  --me: #ff8a5c; --me-soft: #3a2219; --wait: #98a2b3; --wait-soft: #262b34; --done: #4cc38a; --done-soft: #1c3329;
+  --link: #7aa7ff; --mine-bubble: #1f2738; --focus: #7aa7ff;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.6 var(--sans); }
+a { color: var(--link); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+button { font: inherit; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  border-radius: 6px; padding: 5px 12px; }
+button:hover { border-color: var(--muted); }
+button.primary { background: var(--me); border-color: var(--me); color: #fff; font-weight: 600; }
+button:disabled { opacity: .5; cursor: default; }
+
+/* 탭 줄 — gedit 탭처럼 */
+header { position: sticky; top: 0; z-index: 5; background: var(--surface); border-bottom: 1px solid var(--line);
+  display: flex; align-items: stretch; gap: 8px; padding: 0 12px; }
+.brand { font-weight: 700; letter-spacing: .02em; display: flex; align-items: center; padding-right: 8px; white-space: nowrap; }
+#tabs { display: flex; flex: 1; overflow-x: auto; scrollbar-width: thin; }
+.tab { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none; padding: 10px 14px 8px;
+  display: flex; align-items: center; gap: 8px; white-space: nowrap; max-width: 300px; color: var(--muted); }
+.tab:hover { color: var(--ink); }
+.tab.on { color: var(--ink); border-bottom-color: var(--me); font-weight: 600; }
+.tab .t { overflow: hidden; text-overflow: ellipsis; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--wait); flex: none; }
+.dot.me { background: var(--me); }
+.dot.done { background: var(--done); }
+.dot.txt { background: transparent; border: 1.5px solid var(--wait); }
+.count { background: var(--me); color: #fff; border-radius: 9px; font-size: 12px; padding: 0 7px; font-weight: 700;
+  font-variant-numeric: tabular-nums; }
+#doneBtn { align-self: center; white-space: nowrap; }
+
+main { max-width: 980px; margin: 0 auto; padding: 20px 16px 80px; }
+.top { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+h1 { font-size: 22px; line-height: 1.35; margin: 4px 0 6px; text-wrap: balance; }
+.meta { color: var(--muted); font-size: 13px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.pill { border-radius: 999px; padding: 1px 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.pill.me { background: var(--me-soft); color: var(--me); }
+.pill.claude { background: var(--wait-soft); color: var(--wait); }
+.pill.done { background: var(--done-soft); color: var(--done); }
+.banner { background: var(--me-soft); color: var(--ink); border: 1px solid var(--me); border-radius: 8px; padding: 8px 12px;
+  margin: 12px 0; display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+
+.md { overflow-wrap: anywhere; }
+.md h2 { font-size: 17px; margin: 28px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.md h3 { font-size: 15px; }
+.md pre { background: var(--sunk); padding: 10px 12px; border-radius: 6px; overflow-x: auto; font: 13px/1.5 var(--mono); }
+.md code { font-family: var(--mono); font-size: .92em; background: var(--sunk); padding: 1px 4px; border-radius: 4px; }
+.md pre code { background: none; padding: 0; }
+.md img { max-width: 100%; border: 1px solid var(--line); border-radius: 6px; }
+.md table { border-collapse: collapse; display: block; overflow-x: auto; }
+.md td, .md th { border: 1px solid var(--line); padding: 4px 10px; }
+.mermaid { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; text-align: center; }
+
+/* 질문 카드 */
+.item { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; margin: 12px 0; }
+.item.me { border-color: color-mix(in srgb, var(--me) 55%, var(--line)); }
+.item > .head { display: flex; gap: 10px; align-items: baseline; padding: 12px 16px 0; }
+.item .qid { font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
+.item .qt { font-weight: 650; flex: 1; }
+.item .body { padding: 4px 16px 0; }
+.thread { display: grid; gap: 8px; padding: 8px 16px 0; }
+.say { display: grid; grid-template-columns: 44px 1fr; gap: 8px; }
+.say .who { font-size: 12px; font-weight: 700; color: var(--muted); padding-top: 3px; }
+.say .txt { border-radius: 8px; padding: 6px 10px; background: var(--sunk); }
+.say.me .txt { background: var(--mine-bubble); }
+.say.me .who { color: var(--link); }
+.say .txt p { margin: 0 0 4px; } .say .txt p:last-child { margin: 0; }
+.answer { padding: 10px 16px 14px; }
+textarea { width: 100%; min-height: 64px; resize: vertical; font: 14px/1.55 var(--sans); color: var(--ink);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+textarea:focus { border-color: var(--focus); outline: none; }
+textarea.raw { font: 13px/1.55 var(--mono); min-height: 70vh; }
+.row { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+.row .hint { color: var(--muted); font-size: 12px; margin-right: auto; }
+.row .ok { color: var(--done); font-size: 12px; }
+details.reopen > summary { color: var(--muted); font-size: 13px; cursor: pointer; padding: 6px 16px 12px; }
+
+.list { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+.list button { display: flex; width: 100%; border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
+  padding: 10px 14px; gap: 12px; text-align: left; background: none; align-items: baseline; }
+.list button:last-child { border-bottom: 0; }
+.list .when { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.list .who { color: var(--muted); font-size: 12px; margin-left: auto; white-space: nowrap; }
+.empty { color: var(--muted); padding: 40px 0; text-align: center; }
+@media (prefers-reduced-motion: no-preference) { .tab, button { transition: color .12s, border-color .12s; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">확인판</div>
+  <nav id="tabs" aria-label="진행 중인 작업"></nav>
+  <button id="doneBtn" type="button">끝난 작업</button>
+</header>
+<main id="main"><p class="empty">불러오는 중…</p></main>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const h = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.flat().filter(k => k != null)); return e; };
+const dark = matchMedia('(prefers-color-scheme: dark)').matches && document.documentElement.dataset.theme !== 'light';
+marked.setOptions({ breaks: true });   // 세션은 txt 처럼 줄 단위로 쓴다 — 줄바꿈을 그대로
+mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'neutral', securityLevel: 'loose' });
+
+let tasks = [], cur = null, view = 'task', drafts = {}, stale = false;
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+const when = t => { const d = new Date(t * 1000); return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+const shortSession = s => (s || '').replace(/\s*\[[0-9a-f]+\]$/, '');
+
+function md(text, tid) {
+  const box = h('div', { className: 'md' });
+  box.innerHTML = marked.parse(text || '');
+  box.querySelectorAll('img').forEach(img => {
+    const src = img.getAttribute('src') || '';
+    if (!/^(https?:|data:|\/)/.test(src)) img.src = `/files/${encodeURIComponent(tid)}/${src}`;
+  });
+  box.querySelectorAll('pre > code.language-mermaid').forEach(code => {
+    const div = h('div', { className: 'mermaid', textContent: code.textContent });
+    code.parentElement.replaceWith(div);
+  });
+  return box;
+}
+function drawMermaid() { const n = [...document.querySelectorAll('.mermaid:not([data-processed])')]; if (n.length) mermaid.run({ nodes: n }).catch(() => {}); }
+
+function sorted() {
+  const open = tasks.filter(t => t.status !== '끝');
+  return open.sort((a, b) => (b.mine > 0) - (a.mine > 0) || (a.kind === 'txt') - (b.kind === 'txt') || b.mtime - a.mtime);
+}
+function renderTabs() {
+  const nav = $('#tabs'); nav.replaceChildren();
+  for (const t of sorted()) {
+    const cls = t.kind === 'txt' ? 'txt' : t.mine ? 'me' : '';
+    const b = h('button', { type: 'button', className: 'tab' + (view === 'task' && cur && cur.id === t.id ? ' on' : ''), title: `${t.title}\n${t.session}` },
+      h('span', { className: 'dot ' + cls }), h('span', { className: 't', textContent: t.title }),
+      t.mine ? h('span', { className: 'count', textContent: t.mine }) : null);
+    b.onclick = () => open(t.id);
+    nav.append(b);
+  }
+  const done = tasks.filter(t => t.status === '끝').length;
+  $('#doneBtn').textContent = `끝난 작업 ${done}`;
+  const mine = tasks.filter(t => t.status !== '끝').reduce((n, t) => n + t.mine, 0);
+  document.title = mine ? `(${mine}) 확인판` : '확인판';
+}
+
+async function refreshList() {
+  try { tasks = await api('/api/tasks'); } catch { return; }
+  renderTabs();
+  if (view !== 'task' || !cur) return;
+  const t = tasks.find(t => t.id === cur.id);
+  if (t && t.mtime !== cur.mtime) {
+    // 쓰는 중인 칸을 갈아엎지 않는다 — 칸을 벗어날 때 다시 그린다. 안 보낸 글은 drafts 로 살아남는다
+    if (document.activeElement && document.activeElement.tagName === 'TEXTAREA') stale = true;
+    else await open(cur.id, true);
+  }
+}
+document.addEventListener('focusout', e => { if (stale && e.target.tagName === 'TEXTAREA' && view === 'task') { stale = false; setTimeout(() => open(cur.id, true), 0); } });
+
+async function open(id, keepScroll) {
+  const y = scrollY;
+  const prev = cur && cur.id;
+  try { cur = await api('/api/task?id=' + encodeURIComponent(id)); } catch (e) { $('#main').replaceChildren(h('p', { className: 'empty', textContent: '없는 작업입니다.' })); return; }
+  if (prev !== id || view !== 'task') drafts = {};
+  view = 'task'; stale = false;
+  if (location.hash.slice(1) !== encodeURIComponent(id)) history.replaceState(null, '', '#' + encodeURIComponent(id));
+  renderTabs(); renderTask();
+  if (keepScroll) scrollTo(0, y);
+}
+
+function saveRow(onSave, onSend, hint) {
+  const ok = h('span', { className: 'ok' });
+  const save = h('button', { type: 'button', textContent: '저장' });
+  const send = onSend ? h('button', { type: 'button', className: 'primary', textContent: '보내기' }) : null;
+  const run = async (fn, label) => { try { await fn(); ok.textContent = `${label} ${new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}`; } catch (e) { ok.textContent = '실패: ' + e.message; } };
+  save.onclick = () => run(onSave, '저장됨');
+  if (send) send.onclick = () => run(onSend, '보냄 —세션이 읽습니다');
+  return { row: h('div', { className: 'row' }, h('span', { className: 'hint', textContent: hint }), ok, save, send), save, send };
+}
+
+function attachPaste(ta, tid) {
+  const upload = async file => {
+    const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+    const r = await fetch(`/api/image?id=${encodeURIComponent(tid)}&ext=${ext}`, { method: 'POST', body: file });
+    const j = await r.json();
+    const at = ta.selectionStart, snip = `![](${j.path})`;
+    ta.value = ta.value.slice(0, at) + snip + ta.value.slice(ta.selectionEnd);
+    ta.dispatchEvent(new Event('input'));
+  };
+  ta.addEventListener('paste', e => { const f = [...e.clipboardData.files].filter(f => f.type.startsWith('image/')); if (f.length) { e.preventDefault(); f.forEach(upload); } });
+  ta.addEventListener('dragover', e => e.preventDefault());
+  ta.addEventListener('drop', e => { const f = [...e.dataTransfer.files].filter(f => f.type.startsWith('image/')); if (f.length) { e.preventDefault(); f.forEach(upload); } });
+}
+
+function editor(key, value, tid, placeholder, onSave, onSend) {
+  const ta = h('textarea', { value: drafts[key] ?? value, placeholder });
+  ta.addEventListener('input', () => { drafts[key] = ta.value; });
+  if (tid) attachPaste(ta, tid);
+  const done = fn => async () => { cur = await fn(ta.value); delete drafts[key]; await refreshList(); renderTask(); };
+  const r = saveRow(done(onSave), onSend && done(onSend), tid ? '이미지: Ctrl+V · 끌어놓기 · Ctrl+Enter 보내기' : '');
+  ta.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && r.send) { e.preventDefault(); r.send.click(); }
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); r.save.click(); }
+  });
+  return h('div', {}, ta, r.row);
+}
+
+function itemCard(b, tid) {
+  const label = { me: '내 차례', claude: '세션 차례', done: '결정' }[b.turn];
+  const card = h('section', { className: 'item ' + b.turn, id: 'q-' + b.id },
+    h('div', { className: 'head' }, h('span', { className: 'qid', textContent: b.id }), h('span', { className: 'qt', textContent: b.title }),
+      h('span', { className: 'pill ' + b.turn, textContent: label })));
+  if (b.desc) card.append(h('div', { className: 'body' }, md(b.desc, tid)));
+  if (b.entries.length) card.append(h('div', { className: 'thread' }, b.entries.map(e =>
+    h('div', { className: 'say ' + e.who }, h('div', { className: 'who', textContent: e.who === 'me' ? '나' : '세션' }), h('div', { className: 'txt' }, md(e.text, tid))))));
+  const last = b.entries[b.entries.length - 1];
+  const pending = last && last.who === 'me' ? last.text : '';
+  const ed = editor('q:' + b.id, pending, tid, b.turn === 'claude' ? '보낸 답을 고치려면 여기서' : '답을 적어 주세요 — 추천대로면 "ㅇㅋ"',
+    text => api('/api/answer', { id: tid, item: b.id, text }),
+    text => api('/api/answer', { id: tid, item: b.id, text, send: true }));
+  if (b.turn === 'done') card.append(h('details', { className: 'reopen' }, h('summary', { textContent: '다시 답하기' }), h('div', { className: 'answer' }, ed)));
+  else card.append(h('div', { className: 'answer' }, ed));
+  return card;
+}
+
+function renderTask() {
+  const t = cur, main = $('#main');
+  const doneNow = t.status === '끝';
+  const head = h('div', { className: 'top' },
+    h('div', {}, h('h1', { textContent: t.title }),
+      h('div', { className: 'meta' },
+        h('span', { className: 'pill ' + (doneNow ? 'done' : t.mine ? 'me' : 'claude'), textContent: doneNow ? '끝' : t.mine ? `내 차례 ${t.mine}` : t.kind === 'txt' ? 'txt 문서' : '세션 차례' }),
+        h('span', { textContent: t.session }), h('span', { textContent: when(t.mtime) + ' 갱신' }))),
+    h('div', { className: 'actions' }, ...(t.kind === 'task' ? [
+      h('button', { type: 'button', textContent: '원문 편집', onclick: () => renderRaw() }),
+      h('button', { type: 'button', textContent: doneNow ? '다시 진행' : '끝으로', onclick: async () => { cur = await api('/api/status', { id: t.id, done: !doneNow }); await refreshList(); renderTask(); } }),
+    ] : [])));
+  const out = [head];
+  if (t.kind === 'txt') {
+    out.push(h('div', { className: 'banner' }, h('span', { textContent: '옛 txt 문서 — [보내기]가 없습니다. 저장한 뒤 그 세션에 "봐"라고 알려 주세요.' })));
+    out.push(rawEditor(t));
+  } else {
+    for (const b of t.blocks) {
+      if (b.type === 'md') out.push(md(b.text, t.id));
+      else if (b.type === 'item') out.push(itemCard(b, t.id));
+      else if (b.type === 'memo') {
+        out.push(md(b.text, t.id));
+        out.push(editor('memo', b.text, t.id, '자유 메모 — 텍스트·이미지', text => api('/api/memo', { id: t.id, text }), text => api('/api/memo', { id: t.id, text, send: true })));
+      }
+    }
+  }
+  main.replaceChildren(...out);
+  drawMermaid();
+}
+
+function rawEditor(t) {
+  const ta = h('textarea', { className: 'raw', value: drafts.raw ?? t.raw, spellcheck: false });
+  ta.addEventListener('input', () => { drafts.raw = ta.value; });
+  const r = saveRow(async () => {
+    cur = await api('/api/raw', { id: t.id, text: ta.value, mtime: cur.mtime }); delete drafts.raw; await refreshList();
+  }, null, 'Ctrl+S 저장 · 그사이 세션이 고쳤으면 저장이 거절됩니다');
+  ta.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); r.save.click(); } });
+  return h('div', {}, ta, r.row);
+}
+function renderRaw() {
+  view = 'raw';
+  $('#main').replaceChildren(h('div', { className: 'top' }, h('h1', { textContent: cur.title + ' — 원문' }),
+    h('div', { className: 'actions' }, h('button', { type: 'button', textContent: '돌아가기', onclick: () => open(cur.id) }))), rawEditor(cur));
+}
+
+function renderDone() {
+  view = 'done'; renderTabs();
+  const done = tasks.filter(t => t.status === '끝').sort((a, b) => b.mtime - a.mtime);
+  $('#main').replaceChildren(h('h1', { textContent: '끝난 작업' }),
+    done.length ? h('div', { className: 'list' }, done.map(t => h('button', { type: 'button', onclick: () => open(t.id) },
+      h('span', { className: 'when', textContent: when(t.mtime) }), h('span', { textContent: t.title }), h('span', { className: 'who', textContent: shortSession(t.session) }))))
+      : h('p', { className: 'empty', textContent: '아직 없습니다.' }));
+}
+$('#doneBtn').onclick = renderDone;
+
+(async () => {
+  tasks = await api('/api/tasks');
+  const want = decodeURIComponent(location.hash.slice(1));
+  const first = tasks.find(t => t.id === want) || sorted()[0];
+  if (first) await open(first.id); else { renderTabs(); $('#main').replaceChildren(h('p', { className: 'empty', textContent: '올라온 작업이 없습니다.' })); }
+  setInterval(refreshList, 2000);
+})();
+addEventListener('hashchange', () => { const id = decodeURIComponent(location.hash.slice(1)); if (id && (!cur || id !== cur.id)) open(id); });
+</script>
+</body>
+</html>

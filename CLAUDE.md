@@ -1,0 +1,49 @@
+# board (확인판)
+여러 Claude Code 세션이 사용자에게 물을 것(판단·결정·승인·알림)을 작업별 문서로 모아 브라우저 탭 하나씩 보여 주는 로컬 도구. 채팅 스크롤에 질문이 묻히는 문제를 없앤다.
+
+## 현재 상태
+- 2026-11-03 1단계 완료: 서버·화면·CLI·스킬·전역 CLAUDE.md 규칙, `install.sh` 로 설치(이 PC 설치됨, 사용자 서비스 `board`).
+- [보내기] → `board wait` 종료 → 세션 깨움 왕복은 자가 시험으로 확인(2026-11-03).
+- 첫 작업 `~/board/board-v1` 에 사용자 확인 3건 대기(화면 피드백 · 떠 있는 세션 알림 · 2단계 우선순위).
+- 기획·결정 이력: `~/rbq_ws/etc/decisions/board-tool.txt` (Q1~Q6 결정).
+
+## 구조
+```
+board.py         서버 + CLI 한 파일(파이썬 표준 라이브러리만). 문서 해석·고쳐 넣기도 여기
+web/index.html   화면 한 장(바닐라 JS, marked·mermaid 는 cdnjs)
+skill/SKILL.md   세션용 절차·형식 — install.sh 가 ~/.claude/skills/board 로 링크
+claude-rule.md   전역 CLAUDE.md 에 넣는 규칙 — install.sh 가 board:begin/end 사이를 갈아 끼움
+install.sh       명령 링크 · 사용자 서비스 · 스킬 · 규칙 설치(멱등)
+test_board.py    해석·고쳐 넣기 자가 점검
+```
+데이터: `$BOARD_DIR/<작업>/task.md`(+`img/`, `.sent`=보낸 신호, `.seen`=세션이 읽은 표시). 설정 `~/.config/board/env`.
+
+## 실행/빌드/테스트
+```bash
+python3 test_board.py                 # "ok" 면 통과
+bash install.sh                       # 설치·갱신(서버 재시작 포함)
+systemctl --user restart board        # board.py 만 고쳤을 때
+journalctl --user -u board -n 30      # 서버 로그
+board list; board url <작업>
+```
+화면 확인: `google-chrome --headless=new --screenshot=<png> --window-size=1440,1400 --virtual-time-budget=6000 http://localhost:8770/#<작업>` — 창이 안 떠서 사용자 작업을 방해하지 않는다.
+
+## 설계 결정
+- 파일이 원본, 서버는 상태 없음 — 서버가 죽어도 세션·gedit 로 계속 일할 수 있고, 세션은 Read/Edit 로 바로 다룬다.
+- 화면 저장은 그 질문의 답 칸·메모만 그 자리에 고쳐 넣는다(파일 통째 덮기 X) — 세션이 같은 문서의 다른 곳을 고쳐도 안 부딪힌다. 원문 편집만 mtime 비교로 충돌을 거절.
+- 깨우기 = `board wait` 를 세션이 Bash 백그라운드로 건다 → 끝나면 하네스가 세션을 깨운다. `.sent` 가 `.seen` 보다 새것이면 바로 끝나서 "기다리기 전에 보낸 것"도 안 놓친다. 상한 110분(백그라운드 2시간 안).
+- "내 차례" = 질문의 마지막 말이 세션(`⇒`)이거나 말이 없음. 상태 필드를 따로 두지 않아 사람이 gedit 로 고쳐도 맞다.
+- 127.0.0.1 만 연다 — 로그인이 없으니 밖으로 열지 않는다. 폰에서 보기는 비밀번호와 함께 따로(2단계).
+- claude.ai 아티팩트는 폐기 — 여러 세션이 읽고 쓰기는 되지만 화면에서 답을 써도 세션을 깨울 방법이 없고(댓글 "Claude 에게 보내기"·지켜보는 세션만), 사내 문서가 밖에 저장된다.
+- 경로·포트는 코드에 박지 않는다(`~/.config/board/env`) — 다른 사람 PC 에 그대로 깔기 위해(공용화 대비).
+
+## 트러블슈팅
+| 증상 | 원인 | 해결 |
+|---|---|---|
+| 코드 블록 안 `# 주석` 이 질문을 쪼갬 | 제목 판정이 펜스를 몰랐다 | `fences()` 로 펜스 안은 제목·답으로 안 읽음(고침, test_board.py 가 지킴) |
+| 옛 txt 가 진행 중/끝 구분 불가 | txt 엔 끝 표시가 없다 | 빈 `→ 사용자:` 칸·`[ ]`/`[~]` 있거나 이틀 안에 고쳤으면 진행 중 |
+
+## 다음 단계
+- `board-v1` 사용자 답 반영(Q1 화면 피드백, Q2 세션 알림, Q3 2단계 우선순위).
+- 2단계 후보: 데스크톱 알림 · 폰에서 보기(비밀번호) · 세션 생존 표시.
+- 공용화: 저장소 위치(개인 GitHub / 팀 저장소) 결정 후 README 설치법 다듬기.
