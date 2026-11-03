@@ -19,6 +19,9 @@ description: 확인판(board) — 작업 중 사용자 판단·결정·승인·�
 5. **`board wait <작업>` 을 Bash `run_in_background` 로 건다.** 사용자가 [보내기]를 누르면 끝나고 이 세션이 깨어난다.
    - 출력에 보낸 답이 찍힌다. **task.md 를 다시 Read** 하고 질문마다 `⇒` 로 반영, 결정된 건 `[v]`, 새로 물을 것은 새 질문으로.
    - 그리고 다시 `board wait` 를 건다. exit 3(시간 초과)이면 그냥 다시 건다.
+   - **exit 4(사용자 자리 비움)** 면 출력 둘째 줄("확인판 · …: 내 차례 N건")을 `PushNotification`(status `proactive`)으로
+     그대로 보내고 다시 건다 — 사용자 폰(Claude 앱)으로 간다. 같은 자리 비움 동안 작업마다 한 번만(내 차례가 늘면 다시) 나온다.
+     PushNotification 이 "not sent" 여도 그냥 다시 건다.
    - 한 세션이 작업 여럿이면 `board wait a b` 로 한 번에.
 6. 작업이 완전히 끝나면 `board done <작업>` — 화면의 '끝난 작업' 목록으로 내려간다(지우지 않는다).
 

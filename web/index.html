@@ -108,6 +108,9 @@ h1 { font-size: 22px; line-height: 1.35; margin: 4px 0 6px; text-wrap: balance; 
 .say.me .who { color: var(--link); }
 .say .txt p { margin: 0 0 4px; } .say .txt p:last-child { margin: 0; }
 .answer { padding: 10px 16px 14px; }
+.thumbs { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.thumbs:empty { display: none; }
+.thumbs img { height: 72px; border: 1px solid var(--line); border-radius: 6px; }
 textarea { width: 100%; min-height: 64px; resize: vertical; font: 14px/1.55 var(--sans); color: var(--ink);
   background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
 textarea:focus { border-color: var(--focus); outline: none; }
@@ -220,6 +223,7 @@ function renderTabs() {
   $('#sub').textContent = `세션 ${groups().filter(g => g.key !== 'txt').length} · 작업 ${tasks.filter(t => t.status !== '끝').length}`;
   document.title = mine ? `(${mine}) 확인판` : '확인판';
 }
+function keepDrafts() { if (cur) store.set('board.drafts.' + cur.id, drafts); }
 function sorted() { return groups().flatMap(g => g.items); }
 
 async function refreshList() {
@@ -239,18 +243,18 @@ async function open(id, keepScroll) {
   const y = $('#main').scrollTop;
   const prev = cur && cur.id;
   try { cur = await api('/api/task?id=' + encodeURIComponent(id)); } catch (e) { $('#page').replaceChildren(h('p', { className: 'empty', textContent: '없는 작업입니다.' })); return; }
-  if (prev !== id || view !== 'task') drafts = {};
+  if (prev !== id || view !== 'task') drafts = store.get('board.drafts.' + id, {});
   view = 'task'; stale = false;
   if (location.hash.slice(1) !== encodeURIComponent(id)) history.replaceState(null, '', '#' + encodeURIComponent(id));
   renderTabs(); renderTask();
   $('#main').scrollTop = keepScroll ? y : 0;
 }
 
-function saveRow(onSave, onSend, hint) {
-  const ok = h('span', { className: 'ok' });
+function saveRow(onSave, onSend, hint, msg) {
+  const ok = h('span', { className: 'ok', textContent: msg || '' });
   const save = h('button', { type: 'button', textContent: '저장', title: '문서에만 적습니다 — 세션은 안 깨웁니다' });
   const send = onSend ? h('button', { type: 'button', className: 'primary', textContent: '보내기', title: '저장하고 그 세션을 깨웁니다 — 세션이 읽고 반영' }) : null;
-  const run = async (fn, label) => { try { await fn(); ok.textContent = `${label} ${new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}`; } catch (e) { ok.textContent = '실패: ' + e.message; } };
+  const run = async (fn, label) => { try { await fn(); if (ok.isConnected) ok.textContent = label; } catch (e) { ok.textContent = '실패: ' + e.message; } };
   save.onclick = () => run(onSave, '저장됨');
   if (send) send.onclick = () => run(onSend, '보냄 —세션이 읽습니다');
   return { row: h('div', { className: 'row' }, h('span', { className: 'hint', textContent: hint }), ok, save, send), save, send };
@@ -270,30 +274,39 @@ function attachPaste(ta, tid) {
   ta.addEventListener('drop', e => { const f = [...e.dataTransfer.files].filter(f => f.type.startsWith('image/')); if (f.length) { e.preventDefault(); f.forEach(upload); } });
 }
 
+const okMsg = {};
+function thumbs(text, tid) {
+  const paths = [...(text || '').matchAll(/!\[[^\]]*\]\((img\/[^)\s]+)\)/g)].map(m => m[1]);
+  return h('div', { className: 'thumbs' }, paths.map(p => h('img', { src: `/files/${encodeURIComponent(tid)}/${p}`, alt: '붙인 이미지' })));
+}
 function editor(key, value, tid, placeholder, onSave, onSend) {
   const ta = h('textarea', { value: drafts[key] ?? value, placeholder });
-  ta.addEventListener('input', () => { drafts[key] = ta.value; });
+  const prev = tid ? thumbs(ta.value, tid) : h('div');
+  ta.addEventListener('input', () => { drafts[key] = ta.value; keepDrafts(); if (tid) prev.replaceChildren(...thumbs(ta.value, tid).childNodes); });
   if (tid) attachPaste(ta, tid);
-  const done = fn => async () => { cur = await fn(ta.value); delete drafts[key]; await refreshList(); renderTask(); };
-  const r = saveRow(done(onSave), onSend && done(onSend), tid ? '저장 = 여기에만 · 보내기 = 세션이 읽고 반영 · 이미지 Ctrl+V · Ctrl+Enter 보내기' : '');
+  const stamp = () => new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+  const done = (fn, msg) => async () => { cur = await fn(ta.value); delete drafts[key]; keepDrafts(); okMsg[key] = `${msg} ${stamp()}`; await refreshList(); renderTask(); };
+  const r = saveRow(done(onSave, '저장됨 — 대화에 올렸습니다'), onSend && done(onSend, '보냄 — 세션이 읽고 반영합니다'),
+    tid ? '저장 = 여기에만 · 보내기 = 세션이 읽고 반영 · 이미지 Ctrl+V · Ctrl+Enter 보내기' : '', okMsg[key]);
   ta.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && r.send) { e.preventDefault(); r.send.click(); }
     if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); r.save.click(); }
   });
-  return h('div', {}, ta, r.row);
+  return h('div', {}, ta, prev, r.row);
 }
 
+function thread(entries, tid) {
+  return h('div', { className: 'thread' }, entries.map(e =>
+    h('div', { className: 'say ' + e.who }, h('div', { className: 'who', textContent: e.who === 'me' ? '나' : '세션' }), h('div', { className: 'txt' }, md(e.text, tid)))));
+}
 function itemCard(b, tid) {
   const label = { me: '내 차례', claude: '세션 차례', done: '결정' }[b.turn];
   const card = h('section', { className: 'item ' + b.turn, id: 'q-' + b.id },
     h('div', { className: 'head' }, h('span', { className: 'qid', textContent: b.id }), h('span', { className: 'qt', textContent: b.title }),
       h('span', { className: 'pill ' + b.turn, textContent: label })));
   if (b.desc) card.append(h('div', { className: 'body' }, md(b.desc, tid)));
-  if (b.entries.length) card.append(h('div', { className: 'thread' }, b.entries.map(e =>
-    h('div', { className: 'say ' + e.who }, h('div', { className: 'who', textContent: e.who === 'me' ? '나' : '세션' }), h('div', { className: 'txt' }, md(e.text, tid))))));
-  const last = b.entries[b.entries.length - 1];
-  const pending = last && last.who === 'me' ? last.text : '';
-  const ed = editor('q:' + b.id, pending, tid, b.turn === 'claude' ? '보낸 답을 고치려면 여기서' : '답을 적어 주세요 — 추천대로면 "ㅇㅋ"',
+  if (b.entries.length) card.append(thread(b.entries, tid));
+  const ed = editor('q:' + b.id, '', tid, b.turn === 'claude' ? '덧붙일 말이 있으면 — 세션이 아직 반영 전입니다' : '답을 적어 주세요 — 추천대로면 "ㅇㅋ"',
     text => api('/api/answer', { id: tid, item: b.id, text }),
     text => api('/api/answer', { id: tid, item: b.id, text, send: true }));
   if (b.turn === 'done') card.append(h('details', { className: 'reopen' }, h('summary', { textContent: '다시 답하기' }), h('div', { className: 'answer' }, ed)));
@@ -322,8 +335,12 @@ function renderTask() {
       if (b.type === 'md') out.push(md(b.text, t.id));
       else if (b.type === 'item') out.push(itemCard(b, t.id));
       else if (b.type === 'memo') {
-        out.push(md(b.text, t.id));
-        out.push(editor('memo', b.text, t.id, '자유 메모 — 텍스트·이미지', text => api('/api/memo', { id: t.id, text }), text => api('/api/memo', { id: t.id, text, send: true })));
+        const card = h('section', { className: 'item' }, h('div', { className: 'head' }, h('span', { className: 'qt', textContent: '질문과 상관없는 말 · 이미지' })));
+        if (b.desc) card.append(h('div', { className: 'body' }, md(b.desc, t.id)));
+        if (b.entries.length) card.append(thread(b.entries, t.id));
+        card.append(h('div', { className: 'answer' }, editor('memo', '', t.id, '세션에게 하고 싶은 말 — 텍스트·이미지',
+          text => api('/api/answer', { id: t.id, item: '메모', text }), text => api('/api/answer', { id: t.id, item: '메모', text, send: true }))));
+        out.push(card);
       }
     }
   }
@@ -333,9 +350,9 @@ function renderTask() {
 
 function rawEditor(t) {
   const ta = h('textarea', { className: 'raw', value: drafts.raw ?? t.raw, spellcheck: false });
-  ta.addEventListener('input', () => { drafts.raw = ta.value; });
+  ta.addEventListener('input', () => { drafts.raw = ta.value; keepDrafts(); });
   const r = saveRow(async () => {
-    cur = await api('/api/raw', { id: t.id, text: ta.value, mtime: cur.mtime }); delete drafts.raw; await refreshList();
+    cur = await api('/api/raw', { id: t.id, text: ta.value, mtime: cur.mtime }); delete drafts.raw; keepDrafts(); await refreshList();
   }, null, 'Ctrl+S 저장 · 그사이 세션이 고쳤으면 저장이 거절됩니다');
   ta.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); r.save.click(); } });
   return h('div', {}, ta, r.row);
@@ -363,6 +380,9 @@ $('#doneBtn').onclick = renderDone;
   if (first) await open(first.id); else { renderTabs(); $('#page').replaceChildren(h('p', { className: 'empty', textContent: '올라온 작업이 없습니다.' })); }
   setInterval(refreshList, 2000);
 })();
+// 보는 중 신호 — 이 창이 보이고 포커스일 때만. 서버는 12초 안에 신호가 있으면 PC 알림을 안 띄운다
+function beat() { if (document.visibilityState === 'visible' && document.hasFocus()) fetch('/api/presence', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {}); }
+setInterval(beat, 5000); addEventListener('focus', beat); document.addEventListener('visibilitychange', beat); beat();
 addEventListener('hashchange', () => { const id = decodeURIComponent(location.hash.slice(1)); if (id && (!cur || id !== cur.id)) open(id); });
 </script>
 </body>

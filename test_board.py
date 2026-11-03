@@ -46,22 +46,13 @@ assert it["Q1"]["turn"] == "me" and it["Q2"]["turn"] == "me" and it["Q3"]["turn"
 assert it["Q2"]["entries"] == [{"who": "me", "text": "첫 답"}, {"who": "claude", "text": "반영함\n이어지는 줄"}]
 assert "# 코드 안 주석" in it["Q3"]["desc"] and len(it["Q3"]["entries"]) == 1   # 펜스 안은 그대로
 
-# 새 답은 질문 끝에 붙고, 마지막 말이 내 것이면 그 자리에서 바뀐다
-d = board.set_answer(DOC, "Q1", "A 로\n\n단 비상정지는 예외")
-assert items(d)["Q1"]["entries"] == [{"who": "me", "text": "A 로\n\n단 비상정지는 예외"}]
-assert items(d)["Q1"]["turn"] == "claude"
-d = board.set_answer(d, "Q1", "B 로")
-assert items(d)["Q1"]["entries"] == [{"who": "me", "text": "B 로"}]
-assert "### [ ] Q2." in d and d.count("-> B 로") == 1
-# 세션 말 뒤에 답하면 대화가 이어진다
-d = board.set_answer(d, "Q2", "다시")
-assert [e["who"] for e in items(d)["Q2"]["entries"]] == ["me", "claude", "me"]
-# 빈 답은 내 마지막 답을 지운다
-assert items(board.set_answer(d, "Q1", ""))["Q1"]["entries"] == []
-
-memo = [b for b in blocks(board.set_memo(DOC, "새 메모\n![](img/a.png)")) if b["type"] == "memo"]
-assert memo[0]["text"].strip() == "새 메모\n![](img/a.png)"
-assert "## 메모\n새 메모" in board.set_memo("본문만", "새 메모")
+# 덧붙이기: 질문 끝·메모 끝에 쌓이고, 세션 말 뒤면 새 말이 된다
+d = board.add_answer(DOC, "Q2", "또 하나")
+assert [e["who"] for e in items(d)["Q2"]["entries"]] == ["me", "claude", "me"] and "### [v] Q3." in d
+memo = [b for b in blocks(board.add_answer(DOC, board.MEMO, "질문\n![](img/a.png)")) if b["type"] == "memo"][0]
+assert memo["desc"] == "옛 메모" and memo["entries"] == [{"who": "me", "text": "질문\n![](img/a.png)"}]
+assert "## 메모\n-> 새 메모" in board.add_answer("본문만", board.MEMO, "새 메모")
+assert board.add_answer(DOC, "Q1", "  ") == DOC
 
 assert board.split(board.set_meta(DOC, "status", "끝"))[0]["status"] == "끝"
 print("ok")

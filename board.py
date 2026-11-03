@@ -8,12 +8,14 @@
   board serve                               화면 서버 (127.0.0.1:BOARD_PORT)
   board new <작업> --title T --session S    작업 문서 만들기
   board wait <작업>... [--max 분]           [보내기]까지 대기 — 세션은 Bash run_in_background 로 건다
+                                            exit 0 = 보냄(읽고 반영) · 3 = 시간 초과(다시 건다) · 4 = 사용자 자리 비움(폰 푸시 후 다시 건다)
   board done <작업>                         끝으로 표시 (목록 '끝난 작업' 으로)
   board list                                작업 목록
   board url [<작업>]                        화면 주소
 
 설정: 환경변수 > ~/.config/board/env (KEY=VALUE). BOARD_DIR(기본 ~/board) · BOARD_PORT(기본 8770) ·
-BOARD_EXTRA(옛 txt 문서 폴더, os.pathsep 로 여럿 — 탭으로 보여 주기만 한다).
+BOARD_EXTRA(옛 txt 문서 폴더, os.pathsep 로 여럿 — 탭으로 보여 주기만 한다) ·
+BOARD_NOTIFY(0 이면 PC 알림 끔) · BOARD_AWAY_MIN(입력 없이 몇 분이면 자리 비움, 기본 5).
 """
 import argparse
 import datetime
@@ -28,6 +30,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 
 HOME = pathlib.Path.home()
 
@@ -49,6 +52,7 @@ BOARD = pathlib.Path(CFG.get("BOARD_DIR") or HOME / "board").expanduser()
 PORT = int(CFG.get("BOARD_PORT") or 8770)
 EXTRA = [pathlib.Path(p).expanduser() for p in (CFG.get("BOARD_EXTRA") or "").split(os.pathsep) if p]
 NOTIFY = (CFG.get("BOARD_NOTIFY") or "1") != "0"
+AWAY_MIN = float(CFG.get("BOARD_AWAY_MIN") or 5)
 WEB = pathlib.Path(__file__).resolve().parent / "web"
 
 FM = re.compile(r"\A---\n(.*?)\n---\n?", re.S)
@@ -147,6 +151,10 @@ def parse(body):
             b["desc"] = "\n".join(desc).strip()
             b["entries"] = [{"who": e["who"], "text": e["text"]} for e in ents]
             b["turn"] = turn(b["status"], ents)
+        elif b["type"] == "memo":
+            desc, ents = scan(lines)
+            b["desc"] = "\n".join(desc).strip()
+            b["entries"] = [{"who": e["who"], "text": e["text"]} for e in ents]
         else:
             b["text"] = "\n".join(lines).strip("\n")
     return out
@@ -159,33 +167,26 @@ def _item_range(lines, item_id):
     return start, end
 
 
-def set_answer(text, item_id, answer):
-    """질문의 내 최신 답을 answer 로 — 마지막 말이 내 것이면 바꾸고, 아니면 끝에 새로 붙인다."""
-    lines = text.split("\n")
-    start, end = _item_range(lines, item_id)
-    _, ents = scan(lines[start + 1:end])
-    new = [("-> " + l) if l else "->" for l in answer.rstrip().split("\n")] if answer.strip() else []
-    if ents and ents[-1]["who"] == "me":
-        lines[start + 1 + ents[-1]["a"]:start + 1 + ents[-1]["b"]] = new
-    elif new:
-        k = end
-        while k > start + 1 and not lines[k - 1].strip():
-            k -= 1
-        lines[k:k] = new
-    return "\n".join(lines)
-
-
-def set_memo(text, memo):
+def add_answer(text, item_id, answer):
+    """사용자 말을 질문(item_id) 또는 ## 메모(MEMO) 끝에 덧붙인다 — 화면은 보낸 칸을 비우고 대화에 쌓는다."""
+    if not answer.strip():
+        return text
+    new = [("-> " + l) if l else "->" for l in answer.rstrip().split("\n")]
     lines = text.split("\n")
     fz = fences(lines)
-    body = memo.rstrip().split("\n") if memo.strip() else []
-    i = next((i for i, l in enumerate(lines) if not fz[i] and HEAD.match(l) and l.lstrip("#").strip() == MEMO), None)
-    if i is None:
-        while lines and not lines[-1].strip():
-            lines.pop()
-        return "\n".join(lines + ["", "## " + MEMO] + body + [""])
-    end = next((j for j in range(i + 1, len(lines)) if not fz[j] and HEAD.match(lines[j])), len(lines))
-    lines[i + 1:end] = body + [""]
+    if item_id == MEMO:
+        start = next((i for i, l in enumerate(lines) if not fz[i] and HEAD.match(l) and l.lstrip("#").strip() == MEMO), None)
+        if start is None:
+            while lines and not lines[-1].strip():
+                lines.pop()
+            return "\n".join(lines + ["", "## " + MEMO] + new + [""])
+        end = next((j for j in range(start + 1, len(lines)) if not fz[j] and HEAD.match(lines[j])), len(lines))
+    else:
+        start, end = _item_range(lines, item_id)
+    k = end
+    while k > start + 1 and not lines[k - 1].strip():
+        k -= 1
+    lines[k:k] = new
     return "\n".join(lines)
 
 
@@ -289,6 +290,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             if u.path in ("/", "/index.html"):
                 return self.reply((WEB / "index.html").read_bytes(), "text/html; charset=utf-8")
+            if u.path == "/api/presence":
+                return self.reply(presence())
             if u.path == "/api/tasks":
                 return self.reply([summary(t) for t in all_ids()])
             if u.path == "/api/task":
@@ -308,6 +311,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         q = dict(urllib.parse.parse_qsl(u.query))
         raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
         try:
+            if u.path == "/api/presence":
+                _seen["beat"] = time.time()
+                _seen["at"] = 0.0
+                return self.reply(presence())
             if u.path == "/api/image":
                 _, d = resolve(q["id"])
                 ext = re.sub(r"[^a-z0-9]", "", q.get("ext", "png").lower())[:5] or "png"
@@ -324,9 +331,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.reply({"error": "그사이 문서가 바뀌었습니다 — 다시 불러온 뒤 고쳐 주세요"}, code=409)
                 new = body["text"]
             elif u.path == "/api/answer":
-                new = set_answer(text, body["item"], body["text"])
-            elif u.path == "/api/memo":
-                new = set_memo(text, body["text"])
+                new = add_answer(text, body["item"], body["text"])
             elif u.path == "/api/status":
                 new = set_meta(text, "status", "끝" if body.get("done") else "진행 중")
             else:
@@ -384,11 +389,12 @@ class Popups:
 
     def show(self, tid, head, body):
         if self.N is None:
-            subprocess.run(["notify-send", "-a", "확인판", head, body], check=False)
+            subprocess.run(["notify-send", "-u", "critical", "-a", "확인판", head, body], check=False)
             return
 
         def go():
             n = self.N.Notification.new(head, body, "dialog-question")
+            n.set_urgency(self.N.Urgency.CRITICAL)   # 방해 금지 중에도 배너로 뜬다(11-03 사용자 Q7 A). 누르거나 닫을 때까지 남는다
             n.add_action("default", "열기", lambda *a: subprocess.Popen(["xdg-open", url(tid)]))
             n.connect("closed", lambda *a: self.keep.discard(n))
             self.keep.add(n)
@@ -396,6 +402,42 @@ class Popups:
             return False
 
         self.G.idle_add(go)
+
+
+_seen = {"beat": 0.0, "away_since": None, "at": 0.0, "state": "desk"}
+
+
+def _gdbus(dest, path, method):
+    try:
+        out = subprocess.run(["gdbus", "call", "--session", "--dest", dest, "--object-path", path, "--method", method],
+                             capture_output=True, text=True, timeout=2).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r"\((?:uint64 )?(\w+),\)", out)
+    return m.group(1) if m else None
+
+
+def presence():
+    """watching = 확인판 창을 보는 중 · desk = PC 앞(다른 일) · away = 화면 잠김 또는 AWAY_MIN 분 입력 없음.
+    GNOME 이 아니면 잠김·유휴를 못 읽어 desk 로 본다."""
+    t = time.time()
+    if t - _seen["at"] < 1.5:
+        return {"state": _seen["state"], "away_since": _seen["away_since"]}
+    locked = _gdbus("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver", "org.gnome.ScreenSaver.GetActive") == "true"
+    idle = _gdbus("org.gnome.Mutter.IdleMonitor", "/org/gnome/Mutter/IdleMonitor/Core", "org.gnome.Mutter.IdleMonitor.GetIdletime")
+    idle_s = int(idle) / 1000 if idle and idle.isdigit() else 0
+    if locked or idle_s >= AWAY_MIN * 60:
+        state = "away"
+    elif t - _seen["beat"] < 12:
+        state = "watching"
+    else:
+        state = "desk"
+    if state == "away" and _seen["away_since"] is None:
+        _seen["away_since"] = round(t - (0 if locked else idle_s))
+    elif state != "away":
+        _seen["away_since"] = None
+    _seen.update(at=t, state=state)
+    return {"state": state, "away_since": _seen["away_since"]}
 
 
 def notify_loop(interval=3):
@@ -411,6 +453,8 @@ def notify_loop(interval=3):
             if k not in prev:
                 new.setdefault(tid, [title, sess, []])[2].append(q)
         prev = cur
+        if new and presence()["state"] != "desk":   # 보고 있으면 화면 숫자로 충분, 자리 비움은 세션이 폰으로
+            continue
         for tid, (title, sess, qs) in new.items():
             who = re.sub(r"\s*\[[0-9a-f]+\]$", "", sess) or "확인판"
             popups.show(tid, f"내 차례 · {who}", "\n".join([title] + [q for q in qs if q]))
@@ -465,8 +509,8 @@ def report(tid, d):
     for b in blocks:
         if b["type"] == "item" and b["turn"] == "claude":
             print(f"  {b['id']}. {b['title']}\n    -> " + b["entries"][-1]["text"].replace("\n", "\n    -> "))
-        if b["type"] == "memo" and MEMO in info.get("items", []) and b["text"].strip():
-            print("  메모:\n    " + b["text"].strip().replace("\n", "\n    "))
+        if b["type"] == "memo" and MEMO in info.get("items", []) and b["entries"] and b["entries"][-1]["who"] == "me":
+            print("  메모:\n    -> " + b["entries"][-1]["text"].replace("\n", "\n    -> "))
     print("→ task.md 를 다시 읽고 질문마다 ⇒ 로 반영(결정된 건 [v]) 한 뒤 board wait 를 다시 건다.")
 
 
@@ -489,9 +533,37 @@ def cmd_wait(a):
                 report(t, d)
                 (d / ".seen").write_text(now(), encoding="utf-8")
             return 0
+        due = away_due(dirs)
+        if due:
+            print("[자리 비움] 사용자가 자리를 비웠고 내 차례가 남아 있다 — PushNotification(status=proactive) 으로 아래 한 줄을 보내고 board wait 를 다시 건다.")
+            print("확인판 · " + " / ".join(f"{title[:40]}: 내 차례 {n}건" for title, n in due))
+            return 4
         time.sleep(a.poll)
     print(f"{a.max}분 동안 [보내기] 없음 — board wait {' '.join(a.task)} 를 다시 건다.")
     return 3
+
+
+def away_due(dirs):
+    """자리 비움 동안 작업마다 한 번(내 차례가 늘면 다시) 폰으로 알릴 것. 서버가 꺼져 있으면 알리지 않는다."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/presence", timeout=2) as r:
+            p = json.load(r)
+    except (OSError, ValueError):
+        return []
+    if p.get("state") != "away":
+        return []
+    due = []
+    for t, d in dirs.items():
+        s = summary(t)
+        mark = d / ".pushed"
+        try:
+            last = json.loads(mark.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            last = {}
+        if s["status"] != "끝" and s["mine"] and (last.get("since") != p["away_since"] or s["mine"] > last.get("mine", 0)):
+            mark.write_text(json.dumps({"since": p["away_since"], "mine": s["mine"]}), encoding="utf-8")
+            due.append((s["title"], s["mine"]))
+    return due
 
 
 def cmd_done(a):
