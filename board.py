@@ -23,7 +23,9 @@ import mimetypes
 import os
 import pathlib
 import re
+import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -46,6 +48,7 @@ CFG = _config()
 BOARD = pathlib.Path(CFG.get("BOARD_DIR") or HOME / "board").expanduser()
 PORT = int(CFG.get("BOARD_PORT") or 8770)
 EXTRA = [pathlib.Path(p).expanduser() for p in (CFG.get("BOARD_EXTRA") or "").split(os.pathsep) if p]
+NOTIFY = (CFG.get("BOARD_NOTIFY") or "1") != "0"
 WEB = pathlib.Path(__file__).resolve().parent / "web"
 
 FM = re.compile(r"\A---\n(.*?)\n---\n?", re.S)
@@ -337,9 +340,85 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.reply({"error": f"요청 오류: {e}"}, code=400)
 
 
+# ── 데스크톱 알림 ────────────────────────────────────────────────────────────
+
+def pending():
+    """지금 사용자 차례인 것 — 키가 새로 생기면 알린다(새 질문, 세션이 ⇒ 로 되물음, txt 에 빈 → 사용자 칸)."""
+    out = {}
+    for tid in all_ids():
+        try:
+            f, d = resolve(tid)
+            if d is None:
+                s = summary(tid)
+                for i in range(s["mine"]):
+                    out[f"{tid}#{i}"] = (tid, s["title"], "txt 문서", "")
+                continue
+            meta, body = split(f.read_text(encoding="utf-8", errors="replace"))
+        except (KeyError, OSError):
+            continue
+        if meta.get("status", "") in DONE:
+            continue
+        for b in parse(body):
+            if b["type"] == "item" and b["turn"] == "me":
+                out[f"{tid}#{b['id']}#{len(b['entries'])}"] = (tid, meta.get("title") or tid, meta.get("session", ""),
+                                                             f"{b['id']}. {b['title']}")
+    return out
+
+
+class Popups:
+    """GNOME 알림. gi(libnotify)가 있으면 누르면 그 작업 화면이 열린다, 없으면 notify-send 로 글만."""
+
+    def __init__(self):
+        self.keep = set()
+        try:
+            import gi
+            gi.require_version("Notify", "0.7")
+            from gi.repository import GLib, Notify
+            Notify.init("확인판")
+            self.N, self.G = Notify, GLib
+            threading.Thread(target=GLib.MainLoop().run, daemon=True).start()
+        except (ImportError, ValueError):
+            self.N = None
+
+    def show(self, tid, head, body):
+        if self.N is None:
+            subprocess.run(["notify-send", "-a", "확인판", head, body], check=False)
+            return
+
+        def go():
+            n = self.N.Notification.new(head, body, "dialog-question")
+            n.add_action("default", "열기", lambda *a: subprocess.Popen(["xdg-open", url(tid)]))
+            n.connect("closed", lambda *a: self.keep.discard(n))
+            self.keep.add(n)
+            n.show()
+            return False
+
+        self.G.idle_add(go)
+
+
+def notify_loop(interval=3):
+    popups, prev = Popups(), pending()
+    while True:
+        time.sleep(interval)
+        try:
+            cur = pending()
+        except Exception:   # 알림이 서버를 죽이면 안 된다 — 다음 바퀴에 다시
+            continue
+        new = {}
+        for k, (tid, title, sess, q) in cur.items():
+            if k not in prev:
+                new.setdefault(tid, [title, sess, []])[2].append(q)
+        prev = cur
+        for tid, (title, sess, qs) in new.items():
+            who = re.sub(r"\s*\[[0-9a-f]+\]$", "", sess) or "확인판"
+            popups.show(tid, f"내 차례 · {who}", "\n".join([title] + [q for q in qs if q]))
+
+
 def serve():
     BOARD.mkdir(parents=True, exist_ok=True)
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    if NOTIFY:
+        threading.Thread(target=notify_loop, daemon=True).start()
     print(f"확인판: http://localhost:{PORT}  (문서 {BOARD})", flush=True)
     srv.serve_forever()
 
