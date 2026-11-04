@@ -643,6 +643,22 @@ def cmd_snapshot(a):
     print(f"{out} — 작업 {len(ids)}개 · {len(page) // 1024} KB")
 
 
+def cmd_answered(a):
+    """중계용 — 바깥 화면에서 보낸 질문(a.item)에 담당 세션이 ⇒ 로 답하면 끝난다. 0 = 답함(다시 올린다) · 3 = 시간 초과.
+    자동 갱신은 없고 이때만 올린다(11-04 사용자 "메세지 보내면 세션에서 받고 세션에서 메세지 보내면 갱신되고 그정도면")."""
+    deadline = time.time() + a.max * 60
+    while time.time() < deadline:
+        f, _ = resolve(a.task)
+        blocks = parse(split(f.read_text(encoding="utf-8", errors="replace"))[1])
+        b = next((b for b in blocks if (b["type"] == "item" and b["id"] == a.item) or (b["type"] == "memo" and a.item == MEMO)), None)
+        if b is None or (b["entries"] and b["entries"][-1]["who"] == "claude") or b.get("status") == "v":
+            print(f"{a.task} {a.item} 에 세션이 답함 — board snapshot 으로 다시 만들어 Artifact 로 올린다.")
+            return 0
+        time.sleep(a.poll)
+    print(f"{a.max}분 동안 {a.task} {a.item} 에 답 없음 — 다시 걸거나 그만둔다([최신으로] 가 있다).")
+    return 3
+
+
 def cmd_reply(a):
     """바깥 화면의 [보내기]·[저장]을 파일에 써 넣는다(중계 세션이 댓글을 받아 부른다). 글 속 ![](로컬 파일) 은 작업 img/ 로 옮긴다.
     담당 세션이 안 듣고 있으면 SendMessage 로 깨울 문구를 찍는다."""
@@ -701,6 +717,11 @@ def main(argv=None):
     sub.add_parser("orphans", help="보냈는데 듣는 세션이 없어 안 읽힌 작업과 깨울 메시지")
     sn = sub.add_parser("snapshot", help="바깥(아티팩트)용 한 장 만들기")
     sn.add_argument("out")
+    an = sub.add_parser("answered", help="중계용 — 바깥에서 보낸 질문에 세션이 답하면 끝남")
+    an.add_argument("task")
+    an.add_argument("item")
+    an.add_argument("--max", type=float, default=110)
+    an.add_argument("--poll", type=float, default=3)
     rp = sub.add_parser("reply", help="바깥 화면에서 온 답을 문서에 넣기")
     rp.add_argument("task")
     rp.add_argument("item", help="Q1 같은 질문 id, 또는 메모")
@@ -714,7 +735,7 @@ def main(argv=None):
         return print(url(a.task))
     try:
         return {"new": cmd_new, "wait": cmd_wait, "done": cmd_done, "list": cmd_list, "orphans": cmd_orphans,
-                "snapshot": cmd_snapshot, "reply": cmd_reply}[a.cmd](a)
+                "snapshot": cmd_snapshot, "reply": cmd_reply, "answered": cmd_answered}[a.cmd](a)
     except KeyError as e:
         sys.exit(f"없는 작업: {e} — board list 로 확인")
 
