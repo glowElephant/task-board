@@ -27,6 +27,7 @@ import os
 import pathlib
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -56,6 +57,8 @@ EXTRA = [pathlib.Path(p).expanduser() for p in (CFG.get("BOARD_EXTRA") or "").sp
 NOTIFY = (CFG.get("BOARD_NOTIFY") or "1") != "0"
 AWAY_MIN = float(CFG.get("BOARD_AWAY_MIN") or 30)
 WEB = pathlib.Path(__file__).resolve().parent / "web"
+HUB = CFG.get("BOARD_HUB", "")              # 목록 아티팩트 주소 — 비면 아티팩트로 안 내보낸다
+PC = CFG.get("BOARD_PC") or socket.gethostname()
 
 FM = re.compile(r"\A---\n(.*?)\n---\n?", re.S)
 ITEM = re.compile(r"^###\s*\[([ ~vV])\]\s*([^\s.]+)\.?\s*(.*)$")
@@ -275,7 +278,7 @@ def summary(tid):
             "status": "끝" if meta.get("status", "") in DONE else "진행 중",
             "mine": sum(i["turn"] == "me" for i in items), "waiting": sum(i["turn"] == "claude" for i in items),
             "asks": [f"{i['id']}. {i['title']}" for i in items if i["turn"] == "me"],
-            "listening": tid in listeners(), "unread": unread(d), "mtime": f.stat().st_mtime}
+            "listening": tid in listeners(), "unread": unread(d), "unpushed": unpushed(tid), "mtime": f.stat().st_mtime}
 
 
 def all_ids():
@@ -545,7 +548,7 @@ def report(tid, d):
             print(f"  {b['id']}. {b['title']}\n    -> " + b["entries"][-1]["text"].replace("\n", "\n    -> "))
         if b["type"] == "memo" and MEMO in info.get("items", []) and b["entries"] and b["entries"][-1]["who"] == "me":
             print("  메모:\n    -> " + b["entries"][-1]["text"].replace("\n", "\n    -> "))
-    print("→ task.md 를 다시 읽고 질문마다 ⇒ 로 반영(결정된 건 [v]) 한 뒤 board wait 를 다시 건다.")
+    print("→ task.md 를 다시 읽고 질문마다 ⇒ 로 반영(결정된 건 [v]) 한 뒤" + (f" board push {tid} 로 아티팩트에도 올리고," if HUB else "") + " board wait 를 다시 건다.")
 
 
 def cmd_wait(a):
@@ -619,71 +622,98 @@ def cmd_orphans(a):
         print("안 읽힌 작업 없음")
 
 
-def cmd_snapshot(a):
-    """바깥(아티팩트)용 한 장 — 진행 중 작업을 화면 코드(web/index.html)에 심는다. 같은 코드라 PC 화면과 똑같이 보인다.
-    중계 세션이 이 파일을 Artifact 로 올린다. 이미지는 data: 로 넣는다(작업 폴더 img/ 의 3 MB 미만만)."""
-    ids = [t for t in all_ids() if not t.startswith("txt:") and summary(t)["status"] != "끝"]
-    tasks, details, images = [], {}, {}
-    for t in ids:
-        d = detail(t)
-        text = d.pop("raw")
-        tasks.append({k: v for k, v in d.items() if k != "blocks"})
-        details[t] = d
-        folder = resolve(t)[1]
-        for rel in set(re.findall(r"!\[[^\]]*\]\((img/[^)\s]+)\)", text)):
-            f = folder / rel
-            if f.is_file() and f.stat().st_size < 3_000_000:
-                mime = mimetypes.guess_type(f.name)[0] or "image/png"
-                images[f"{t}/{rel}"] = f"data:{mime};base64," + base64.b64encode(f.read_bytes()).decode()
-    data = json.dumps({"tasks": tasks, "details": details, "images": images, "at": time.time()}, ensure_ascii=False)
+IMG_ONE, IMG_ALL = 3_000_000, 10_000_000
+
+
+def page_for(tid):
+    """작업 아티팩트 한 장 — PC 화면과 같은 코드(web/index.html)에 이 작업만 심는다(window.BOARD.single).
+    사진은 data: 로(장당 3 MB · 합쳐 10 MB 까지, 넘으면 빠지고 화면이 'PC 에서 보기'로 그린다)."""
+    d = detail(tid)
+    text = d.pop("raw")
+    folder, images, total = resolve(tid)[1], {}, 0
+    for rel in sorted(set(re.findall(r"!\[[^\]]*\]\((img/[^)\s]+)\)", text))):
+        f = folder / rel
+        if f.is_file() and f.stat().st_size < IMG_ONE and total + f.stat().st_size < IMG_ALL:
+            total += f.stat().st_size
+            mime = mimetypes.guess_type(f.name)[0] or "image/png"
+            images[f"{tid}/{rel}"] = f"data:{mime};base64," + base64.b64encode(f.read_bytes()).decode()
+    data = {"single": tid, "hub": HUB, "pc": PC, "tasks": [{k: v for k, v in d.items() if k != "blocks"}],
+            "details": {tid: d}, "images": images, "at": time.time()}
     page = (WEB / "index.html").read_text(encoding="utf-8")
-    page = page.replace("<script>\nconst $ =", "<script>window.BOARD = " + data.replace("</", "<\\/") + ";</script>\n<script>\nconst $ =", 1)
-    out = pathlib.Path(a.out).expanduser()
-    write(out, page)
-    write(pathlib.Path(str(out) + ".keys"), json.dumps(sorted(said())))   # board notice 가 이것과 비교한다
-    print(f"{out} — 작업 {len(ids)}개 · {len(page) // 1024} KB")
+    title = re.sub(r"[<>&]", "", d["title"])[:80]   # 갤러리 이름 = 작업 제목(작업마다 아티팩트가 따로라 구분돼야 한다)
+    page = page.replace("<title>Task Board</title>", f"<title>{title}</title>", 1)
+    js = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    return page.replace("<script>\nconst $ =", "<script>window.BOARD = " + js + ";</script>\n<script>\nconst $ =", 1)
 
 
-def said():
-    """세션이 사용자에게 한 말 — 새 질문(내 차례)과 ⇒ 답. 바깥 화면은 이게 새로 생길 때만 다시 올린다."""
-    keys = set()
-    for tid in all_ids():
-        if tid.startswith("txt:"):
-            continue
-        try:
-            meta, body = split(resolve(tid)[0].read_text(encoding="utf-8", errors="replace"))
-        except (KeyError, OSError):
-            continue
-        if meta.get("status", "") in DONE:
-            continue
-        for b in parse(body):
-            if b["type"] in ("item", "memo") and (b.get("turn") == "me" or (b["entries"] and b["entries"][-1]["who"] == "claude")):
-                keys.add(f"{tid}#{b.get('id', MEMO)}#{len(b['entries'])}")
-    return keys
+def row_id(tid):
+    """목록 저장소 문서 id — PC 이름을 붙여 다른 PC 의 같은 작업 이름과 안 겹치게. 허용 글자 밖(한글 등)은 ~xxxx 로."""
+    return re.sub(r"[^A-Za-z0-9_\-.]", lambda m: "~%04x" % ord(m.group()), f"{PC}__{tid}")[:200]
 
 
-def cmd_notice(a):
-    """중계용 — 세션이 사용자에게 새로 말하면(새 질문·⇒ 답) 끝난다. 요약·설명만 고친 것은 안 센다.
-    0 = 새 말 있음(board snapshot → publish → 다시 건다) · 3 = 시간 초과(다시 건다).
-    11-04 사용자: 자동 갱신은 없어도 되지만 "세션에서 메세지 보내면 갱신" · 새 작업이 아티팩트에 안 올라가자 "왜 안올라가?"."""
-    ref, first = pathlib.Path(a.than + ".keys").expanduser(), None
-    deadline = time.time() + a.max * 60
-    while time.time() < deadline:
-        try:
-            old = set(json.loads(ref.read_text(encoding="utf-8")))
-        except (OSError, ValueError):
-            old = set()
-        new = said() - old
-        if new:
-            first = first or time.time()
-            if time.time() - first >= a.quiet:
-                print(f"세션이 새로 말함 {len(new)}건 — board snapshot {a.than} → Artifact publish → board notice 다시 건다.")
-                return 0
-        else:
-            first = None
-        time.sleep(a.poll)
-    print(f"{a.max}분 동안 새 말 없음 — board notice 를 다시 건다.")
-    return 3
+def remote(d):
+    """작업 폴더의 .remote/ — 아티팩트 주소(url)·목록 줄 버전(version)·올린 시각(at)."""
+    try:
+        return json.loads((d / ".remote" / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def unpushed(tid):
+    """문서가 마지막으로 아티팩트에 올린 뒤 바뀌었나(목록 주소가 없으면 늘 False)."""
+    if not HUB or tid.startswith("txt:"):
+        return False
+    f, d = resolve(tid)
+    return f.stat().st_mtime > remote(d).get("at", 0)
+
+
+def cmd_push(a):
+    """작업 아티팩트·목록 줄을 내보낼 준비를 하고, 세션이 부를 도구 호출을 순서대로 찍는다.
+    세션이 문서를 고친 그 자리에서 부른다 — 중계 세션 없이 두 곳(로컬 보드·아티팩트)이 같은 문서에서 그려진다(11-04 사용자 결정)."""
+    if not HUB:
+        sys.exit("BOARD_HUB(목록 아티팩트 주소)가 설정에 없습니다 — ~/.config/board/env")
+    f, d = resolve(a.task)
+    if d is None:
+        sys.exit("txt 문서는 안 됩니다")
+    out = pathlib.Path(a.out).expanduser() if a.out else d / ".remote"
+    out.mkdir(parents=True, exist_ok=True)
+    st, s = remote(d), summary(a.task)
+    page = out / f"{a.task}.html"
+    write(page, page_for(a.task))
+    row = {"pc": PC, "task": a.task, "title": s["title"], "session": s["session"], "status": s["status"],
+           "mine": s["mine"], "waiting": s["waiting"], "asks": s["asks"][:5], "url": st.get("url", ""), "updated": time.time()}
+    write(out / "row.json", json.dumps(row, ensure_ascii=False))
+    st.update(page=str(page), row=str(out / "row.json"))
+    (d / ".remote").mkdir(exist_ok=True)
+    write(d / ".remote" / "state.json", json.dumps(st))
+    print(f"[push] {a.task} — 아래 순서대로 부르세요.")
+    if st.get("url"):
+        print(f"1) Artifact publish: file_path={page}  url={st['url']}")
+    else:
+        print(f'1) Artifact publish: file_path={page}  icon="checklist"  capabilities={{"comments": {{}}, "assets": {{}}}}  (첫 올리기 — 새 아티팩트)')
+        print(f"   → board pushed {a.task} --url <결과 주소>   (목록 줄에 링크를 넣는다)")
+    v = st.get("version")
+    print(f"2) ArtifactData set: url={HUB}  collection=tasks  doc_id={row_id(a.task)}  file_path={out / 'row.json'}" + (f"  if_version={v}" if v else "  (처음 — if_version 없이)"))
+    print(f"3) board pushed {a.task} --version <결과 version>")
+    print("   버전이 안 맞아 거절되면 결과에 나온 현재 version 으로 2) 를 다시. 아티팩트가 없다고 나오면 board pushed --reset 뒤 다시 push.")
+
+
+def cmd_pushed(a):
+    f, d = resolve(a.task)
+    (d / ".remote").mkdir(exist_ok=True)
+    st = {} if a.reset else remote(d)
+    if a.url:
+        st["url"] = a.url
+        rowf = pathlib.Path(st.get("row", d / ".remote" / "row.json"))
+        if rowf.is_file():
+            row = json.loads(rowf.read_text(encoding="utf-8")); row["url"] = a.url
+            write(rowf, json.dumps(row, ensure_ascii=False))
+    if a.version:
+        st["version"] = a.version
+    if a.url or a.version:
+        st["at"] = time.time()
+    write(d / ".remote" / "state.json", json.dumps(st))
+    print(f"기록함: {a.task} {st}")
 
 
 def cmd_reply(a):
@@ -742,13 +772,14 @@ def main(argv=None):
     sub.add_parser("done").add_argument("task")
     sub.add_parser("list")
     sub.add_parser("orphans", help="보냈는데 듣는 세션이 없어 안 읽힌 작업과 깨울 메시지")
-    sn = sub.add_parser("snapshot", help="바깥(아티팩트)용 한 장 만들기")
-    sn.add_argument("out")
-    nt = sub.add_parser("notice", help="중계용 — 세션이 사용자에게 새로 말하면 끝남")
-    nt.add_argument("--than", required=True, help="board snapshot 이 만든 파일")
-    nt.add_argument("--quiet", type=float, default=5)
-    nt.add_argument("--max", type=float, default=110)
-    nt.add_argument("--poll", type=float, default=3)
+    pu = sub.add_parser("push", help="작업 아티팩트·목록 줄 내보낼 준비 + 부를 도구 호출 안내")
+    pu.add_argument("task")
+    pu.add_argument("--out", help="만들 파일을 둘 폴더(기본 <작업>/.remote) — Artifact 가 거절하면 세션 scratchpad 로")
+    pd = sub.add_parser("pushed", help="push 뒤 결과(아티팩트 주소·목록 줄 버전) 기록")
+    pd.add_argument("task")
+    pd.add_argument("--url")
+    pd.add_argument("--version", type=int)
+    pd.add_argument("--reset", action="store_true", help="아티팩트가 지워졌을 때 — 주소·버전을 잊는다")
     rp = sub.add_parser("reply", help="바깥 화면에서 온 답을 문서에 넣기")
     rp.add_argument("task")
     rp.add_argument("item", help="Q1 같은 질문 id, 또는 메모")
@@ -762,7 +793,7 @@ def main(argv=None):
         return print(url(a.task))
     try:
         return {"new": cmd_new, "wait": cmd_wait, "done": cmd_done, "list": cmd_list, "orphans": cmd_orphans,
-                "snapshot": cmd_snapshot, "reply": cmd_reply, "notice": cmd_notice}[a.cmd](a)
+                "push": cmd_push, "pushed": cmd_pushed, "reply": cmd_reply}[a.cmd](a)
     except KeyError as e:
         sys.exit(f"없는 작업: {e} — board list 로 확인")
 

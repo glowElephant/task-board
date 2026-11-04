@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task Board</title>
+<style>
+/* 목록 아티팩트 — 모든 PC 의 작업을 PC·세션별로. 각 세션이 자기 줄을 저장소(db tasks)에 직접 쓰고, 이 화면은 실시간으로 읽기만 한다.
+   색·글꼴은 web/index.html(PC 화면)과 같은 토큰. */
+:root {
+  --bg: #f4f5f7; --surface: #ffffff; --sunk: #eef0f3; --ink: #1c2230; --muted: #667085; --line: #dfe3e8;
+  --me: #d9480f; --me-soft: #fff1ea; --wait: #7a8599; --wait-soft: #eef1f5; --done: #2b8a5e; --done-soft: #e8f6ef;
+  --link: #1d5fd1; --focus: #1d5fd1;
+  --sans: "Pretendard", "Noto Sans KR", "Noto Sans CJK KR", "Apple SD Gothic Neo", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #13161b; --surface: #1b1f26; --sunk: #232831; --ink: #e5e8ee; --muted: #98a2b3; --line: #2d333d;
+  --me: #ff8a5c; --me-soft: #3a2219; --wait: #98a2b3; --wait-soft: #262b34; --done: #4cc38a; --done-soft: #1c3329;
+  --link: #7aa7ff; --focus: #7aa7ff;
+} }
+:root[data-theme="dark"] {
+  --bg: #13161b; --surface: #1b1f26; --sunk: #232831; --ink: #e5e8ee; --muted: #98a2b3; --line: #2d333d;
+  --me: #ff8a5c; --me-soft: #3a2219; --wait: #98a2b3; --wait-soft: #262b34; --done: #4cc38a; --done-soft: #1c3329;
+  --link: #7aa7ff; --focus: #7aa7ff;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.6 var(--sans); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.wrap { max-width: 1400px; margin: 0 auto; padding: 16px 16px 60px; }
+header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+header h1 { font-size: 20px; margin: 0; letter-spacing: .02em; }
+header .sub { color: var(--muted); font-size: 13px; margin-left: auto; font-variant-numeric: tabular-nums; }
+.count { background: var(--me); color: #fff; border-radius: 9px; font-size: 12px; padding: 0 7px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.pc { margin-top: 22px; }
+.pc > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; display: flex; gap: 8px; align-items: center; }
+.sess { margin: 10px 0 0; }
+.sess > h3 { font-size: 14px; margin: 0 0 6px; display: flex; gap: 8px; align-items: center; }
+.rows { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); }
+a.row { display: grid; gap: 3px; text-decoration: none; color: inherit; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px 12px; }
+a.row:hover { border-color: var(--muted); }
+a.row.me { border-color: color-mix(in srgb, var(--me) 55%, var(--line)); }
+a.row.stale { opacity: .6; }
+a.row.nolink { cursor: default; }
+.row .top { display: flex; gap: 8px; align-items: flex-start; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--wait); flex: none; margin-top: 7px; }
+.dot.me { background: var(--me); }
+.row .tt { flex: 1; font-weight: 600; line-height: 1.4; }
+.row ul { margin: 0; padding: 0 0 0 16px; list-style: none; display: grid; gap: 1px; }
+.row li { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .when { font-size: 12px; color: var(--muted); padding-left: 16px; font-variant-numeric: tabular-nums; }
+.row .warn { color: var(--me); }
+details.done { margin-top: 28px; }
+details.done > summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+.empty { color: var(--muted); padding: 48px 0; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><h1>Task Board</h1><span id="total"></span><span class="sub" id="sub"></span></header>
+  <main id="list"><p class="empty">불러오는 중…</p></main>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const h = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.flat().filter(k => k != null)); return e; };
+const short = s => (s || '').replace(/\s*\[[0-9a-f]+\]$/, '') || '세션 미상';
+const DAY = 86400;
+function ago(t) {
+  const s = Date.now() / 1000 - t;
+  if (s < 60) return '방금'; if (s < 3600) return `${Math.floor(s / 60)}분 전`; if (s < DAY) return `${Math.floor(s / 3600)}시간 전`;
+  return `${Math.floor(s / DAY)}일 전`;
+}
+function row(t) {
+  const stale = Date.now() / 1000 - (t.updated || 0) > 3 * DAY;
+  const asks = (t.asks || []).slice(0, 3), more = (t.asks || []).length - asks.length;
+  const a = h('a', { className: 'row' + (t.mine ? ' me' : '') + (stale && t.status !== '끝' ? ' stale' : '') + (t.url ? '' : ' nolink'),
+      href: t.url || '#', target: '_blank', rel: 'noopener', title: t.url ? '이 작업 아티팩트 열기 — 답하면 그 세션이 바로 받습니다' : '세션이 아직 작업 아티팩트를 안 올렸습니다' },
+    h('div', { className: 'top' }, h('span', { className: 'dot' + (t.mine ? ' me' : '') }), h('span', { className: 'tt', textContent: t.title || t.task }),
+      t.mine ? h('span', { className: 'count', textContent: t.mine }) : null),
+    asks.length ? h('ul', {}, asks.map(q => h('li', { textContent: q, title: q })), more > 0 ? h('li', { textContent: `외 ${more}개` }) : null) : null,
+    h('div', { className: 'when' }, `${ago(t.updated || 0)} · ${t.mine ? '내 차례' : t.waiting ? '세션이 반영 중' : '내 차례 없음'}`,
+      !t.url ? h('span', { className: 'warn', textContent: ' · 아직 안 올림' }) : null,
+      stale && t.status !== '끝' ? h('span', { className: 'warn', textContent: ' · 오래 안 바뀜 — 세션 확인 필요' }) : null));
+  if (!t.url) a.onclick = e => e.preventDefault();
+  return a;
+}
+function render(all) {
+  const open = all.filter(t => t.status !== '끝'), done = all.filter(t => t.status === '끝');
+  const mine = open.reduce((n, t) => n + (t.mine || 0), 0);
+  $('#total').replaceChildren(...(mine ? [h('span', { className: 'count', textContent: mine })] : []));
+  const pcs = [...new Set(open.map(t => t.pc || '?'))];
+  $('#sub').textContent = `PC ${pcs.length} · 작업 ${open.length}`;
+  document.title = mine ? `(${mine}) Task Board` : 'Task Board';
+  const byPc = new Map();
+  for (const t of open) {
+    const p = t.pc || '?', s = short(t.session);
+    if (!byPc.has(p)) byPc.set(p, new Map());
+    if (!byPc.get(p).has(s)) byPc.get(p).set(s, []);
+    byPc.get(p).get(s).push(t);
+  }
+  const score = ts => ts.reduce((n, t) => n + (t.mine || 0), 0);
+  const out = [];
+  for (const [p, sessions] of [...byPc].sort((a, b) => score([...b[1].values()].flat()) - score([...a[1].values()].flat()) || a[0].localeCompare(b[0]))) {
+    const pcMine = score([...sessions.values()].flat());
+    out.push(h('section', { className: 'pc' }, h('h2', {}, `PC ${p}`, pcMine ? h('span', { className: 'count', textContent: pcMine }) : null),
+      [...sessions].sort((a, b) => score(b[1]) - score(a[1]) || a[0].localeCompare(b[0])).map(([s, ts]) =>
+        h('div', { className: 'sess' }, h('h3', {}, s, score(ts) ? h('span', { className: 'count', textContent: score(ts) }) : null),
+          h('div', { className: 'rows' }, ts.sort((a, b) => (b.mine || 0) - (a.mine || 0) || (b.updated || 0) - (a.updated || 0)).map(row))))));
+  }
+  if (!open.length) out.push(h('p', { className: 'empty', textContent: '진행 중인 작업이 없습니다.' }));
+  if (done.length) out.push(h('details', { className: 'done' }, h('summary', { textContent: `끝난 작업 ${done.length}` }),
+    h('div', { className: 'rows', style: 'margin-top:8px' }, done.sort((a, b) => (b.updated || 0) - (a.updated || 0)).map(row))));
+  $('#list').replaceChildren(...out);
+}
+(async () => {
+  const fail = msg => $('#list').replaceChildren(h('p', { className: 'empty', textContent: msg }));
+  const timer = setTimeout(() => fail('목록을 못 불러왔습니다 — 잠시 뒤 다시 열어 주세요.'), 10000);
+  const db = window.claude ? await claude.use('db') : null;
+  if (!db) { clearTimeout(timer); return fail('이 화면에선 목록을 읽을 수 없습니다(claude.ai 로그인 필요).'); }
+  db.collection('tasks').onSnapshot(snap => { clearTimeout(timer); render(snap.docs.map(d => d.data() || {})); },
+    e => { clearTimeout(timer); fail('목록을 못 읽었습니다: ' + (e && e.message || e)); });
+})();
+</script>
+</body>
+</html>

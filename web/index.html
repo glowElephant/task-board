@@ -154,12 +154,21 @@ const R = window.BOARD || null;
 let comments = null, assets = null;
 if (R && window.claude) { claude.use('comments').then(c => comments = c); claude.use('assets').then(a => assets = a); }
 const why = { no_session: '받을 세션이 없습니다 — PC 의 중계 세션이 꺼져 있습니다', writers_only: '편집 권한이 있어야 보낼 수 있습니다', off: '이 화면에선 보내기가 꺼져 있습니다' };
+const bytes = t => new TextEncoder().encode(t).length;
 async function relay(tid, item, text, send) {
   if (!comments) throw new Error('이 화면에선 보낼 수 없습니다(댓글 권한)');
-  const can = await comments.canSendToClaude().catch(() => 'off');
-  if (can !== 'available') throw new Error(why[can] || can);
+  const body = `[board ${send ? 'send' : 'save'}] ${tid} ${item}\n${text}`;
+  if (bytes(body) > 4000) throw new Error('너무 깁니다(한 번에 약 1,300자까지) — 나눠서 보내 주세요');
   const anchor = await comments.anchorFor(document.getElementById('q-' + item) || $('#page'));
-  await comments.sendToClaude({ anchor, text: `[board ${send ? 'send' : 'save'}] ${tid} ${item}\n${text}` });
+  const leave = () => comments.create({ anchor, text: body });   // 세션이 꺼졌을 때 — 그냥 댓글로 남기면 세션이 다시 올릴 때 읽는다
+  const can = await comments.canSendToClaude().catch(() => 'off');
+  if (can !== 'available') throw Object.assign(new Error(can === 'no_session' ? '이 작업 세션이 지금 꺼져 있습니다' : (why[can] || can)), can === 'no_session' ? { leave } : {});
+  try { await comments.sendToClaude({ anchor, text: body }); }
+  catch (e) {
+    if (e && e.code === 'rate_limited') throw new Error('너무 자주 보냈습니다 — 잠시 뒤 다시 보내 주세요(쓴 글은 남아 있습니다)');
+    if (e && e.code === 'claude_unavailable') throw Object.assign(new Error('이 작업 세션이 지금 받을 수 없습니다'), { leave });
+    throw e;
+  }
   const d = R.details[tid];   // 다시 올라오기 전까지 내 말을 바로 보이게
   const b = d && d.blocks.find(b => (b.type === 'item' && b.id === item) || (b.type === 'memo' && item === '메모'));
   if (b) { b.entries.push({ who: 'me', text }); if (b.turn) b.turn = 'claude'; }
@@ -187,7 +196,10 @@ function md(text, tid) {
   box.innerHTML = marked.parse(text || '');
   box.querySelectorAll('img').forEach(img => {
     const src = img.getAttribute('src') || '';
-    if (!/^(https?:|data:|\/)/.test(src)) img.src = R ? (R.images[tid + '/' + src] || '') : `/files/${encodeURIComponent(tid)}/${src}`;
+    if (/^(https?:|data:|\/)/.test(src)) return;
+    if (!R) { img.src = `/files/${encodeURIComponent(tid)}/${src}`; return; }
+    if (R.images[tid + '/' + src]) img.src = R.images[tid + '/' + src];
+    else img.replaceWith(h('span', { className: 'pill claude', textContent: '사진(커서 못 실음) — PC 에서 보기' }));
   });
   box.querySelectorAll('pre > code.language-mermaid').forEach(code => {
     const div = h('div', { className: 'mermaid', textContent: code.textContent });
@@ -246,7 +258,7 @@ function renderTabs() {
   const mine = tasks.filter(t => t.status !== '끝').reduce((n, t) => n + t.mine, 0);
   $('#total').replaceChildren(...(mine ? [h('span', { className: 'count', textContent: mine })] : []));
   $('#sub').textContent = `세션 ${groups().filter(g => g.key !== 'txt').length} · 작업 ${tasks.filter(t => t.status !== '끝').length}`;
-  document.title = mine ? `(${mine}) Task Board` : 'Task Board';
+  document.title = R && R.single ? (tasks[0] ? tasks[0].title : 'Task Board') : mine ? `(${mine}) Task Board` : 'Task Board';
 }
 function keepDrafts() { if (cur) store.set('board.drafts.' + cur.id, drafts); }
 function sorted() { return groups().flatMap(g => g.items); }
@@ -279,7 +291,15 @@ function saveRow(onSave, onSend, hint, msg) {
   const ok = h('span', { className: 'ok', textContent: msg || '' });
   const save = h('button', { type: 'button', textContent: '저장', title: '문서에만 적습니다 — 세션은 안 깨웁니다' });
   const send = onSend ? h('button', { type: 'button', className: 'primary', textContent: '보내기', title: '저장하고 그 세션을 깨웁니다 — 세션이 읽고 반영' }) : null;
-  const run = async (fn, label) => { try { await fn(); if (ok.isConnected) ok.textContent = label; } catch (e) { ok.textContent = '실패: ' + e.message; } };
+  const run = async (fn, label) => {
+    try { await fn(); if (ok.isConnected) ok.textContent = label; }
+    catch (e) {
+      ok.textContent = '실패: ' + e.message;
+      if (e.leave && !ok.nextElementSibling?.classList.contains('leave')) ok.after(h('button', { type: 'button', className: 'leave', textContent: '남겨 두기',
+        title: '세션이 다시 켜져 이 작업을 다시 올릴 때 읽고 넣습니다',
+        onclick: async ev => { ev.target.disabled = true; try { await e.leave(); ok.textContent = '남겼습니다 — 세션이 다시 켜지면 넣습니다'; ev.target.remove(); } catch (x) { ok.textContent = '실패: ' + x.message; ev.target.disabled = false; } } }));
+    }
+  };
   save.onclick = () => run(onSave, '저장됨');
   if (send) send.onclick = () => run(onSend, '보냄 —세션이 읽습니다');
   return { row: h('div', { className: 'row' }, h('span', { className: 'hint', textContent: hint }), ok, save, send), save, send };
@@ -358,14 +378,16 @@ function renderTask() {
     h('div', {}, h('h1', { textContent: t.title }),
       h('div', { className: 'meta' },
         h('span', { className: 'pill ' + (doneNow ? 'done' : t.mine ? 'me' : 'claude'), textContent: doneNow ? '끝' : t.mine ? `내 차례 ${t.mine}` : t.kind === 'txt' ? 'txt 문서' : '세션 차례' }),
-        h('span', { textContent: t.session }), h('span', { textContent: when(t.mtime) + ' 갱신' }))),
+        h('span', { textContent: t.session }), h('span', { textContent: when(t.mtime) + ' 갱신' }),
+        !R && t.unpushed ? h('span', { className: 'pill me', textContent: '아티팩트에 아직 안 올림', title: '세션이 board push 를 안 했습니다' }) : null)),
     h('div', { className: 'actions' }, ...(t.kind === 'task' && !R ? [
       h('button', { type: 'button', textContent: '원문 편집', onclick: () => renderRaw() }),
       h('button', { type: 'button', textContent: doneNow ? '다시 진행' : '끝으로', onclick: async () => { cur = await api('/api/status', { id: t.id, done: !doneNow }); await refreshList(); renderTask(); } }),
     ] : [])));
   const out = [head];
+  if (R && R.single && R.hub) out.unshift(h('a', { href: R.hub, target: '_blank', rel: 'noopener', textContent: '← Task Board 목록' }));
   if (R) {   // 자동 갱신 없음(11-04 사용자 "다시 띄우면 되잖아") — 이 버튼이나 [보내기] 때만 중계 세션이 다시 올린다
-    const msg = h('span', { textContent: `바깥에서 보는 화면 — PC 내용을 ${when(R.at)} 에 맞췄습니다.` });
+    const msg = h('span', { textContent: R.single ? `PC(${R.pc}) 문서 ${when(R.at)} 기준 — 세션이 질문·답을 쓸 때마다 다시 올립니다.` : `바깥에서 보는 화면 — PC 내용을 ${when(R.at)} 에 맞췄습니다.` });
     const btn = h('button', { type: 'button', textContent: '최신으로', title: '중계 세션이 PC 내용으로 다시 올립니다 — 10~20초' });
     btn.onclick = async () => {
       btn.disabled = true;
@@ -373,7 +395,7 @@ function renderTask() {
         if (!comments) throw new Error('이 화면에선 쓸 수 없습니다(댓글 권한)');
         const can = await comments.canSendToClaude().catch(() => 'off');
         if (can !== 'available') throw new Error(why[can] || can);
-        await comments.sendToClaude({ anchor: await comments.anchorFor($('#page')), text: '[board sync]\n최신으로 맞춰 주세요' });
+        await comments.sendToClaude({ anchor: await comments.anchorFor($('#page')), text: R.single ? `[board sync] ${R.single}\n최신으로 다시 올려 주세요` : '[board sync]\n최신으로 맞춰 주세요' });
         msg.textContent = '요청했습니다 — 10~20초 뒤 화면이 새 내용으로 다시 열립니다.';
       } catch (e) { msg.textContent = '실패: ' + e.message; btn.disabled = false; }
     };
@@ -428,6 +450,7 @@ function renderDone() {
 }
 $('#doneBtn').onclick = renderDone;
 if (R) $('#doneBtn').hidden = true;   // 바깥 화면엔 진행 중 작업만 싣는다
+if (R && R.single) { document.querySelector('aside').hidden = true; document.querySelector('.app').style.gridTemplateColumns = '1fr'; }
 
 (async () => {
   tasks = await api('/api/tasks');
