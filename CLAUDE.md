@@ -9,7 +9,7 @@
 - 2026-11-04 이름 Task Board(사용자). 화면·알림·문서에 보이는 이름만 — 명령어 `board`·스킬 이름은 그대로(떠 있는 세션이 다시 배울 일 없게).
 - 2026-11-04 밖에서 보기: 세션마다 아티팩트 한 장(`board push`) + 목록 아티팩트 한 장(`board hubpage`, db `tasks`). 목록 주소는 각자 설정 `BOARD_HUB`.
 - 2026-11-04 플러그인 모양(`.claude-plugin/`, `skills/board/`, `hooks/`) + `board setup` — 다른 사람·다른 PC 는 플러그인 설치 두 줄 + setup.
-  저장소 github.com/glowElephant/task-board — 공개 예정(사용자 결정 2026-11-04: 공개하되 회사 안에만 알림). 공개 전 사내 흔적은 일반 예시로 바꿈.
+  저장소 github.com/glowElephant/task-board — 2026-11-04 공개(사용자 결정: 공개하되 회사 안에만 알림). 빈 홈에서 `claude plugin marketplace add glowElephant/task-board` → install 시험 통과.
 
 ## 구조
 ```
