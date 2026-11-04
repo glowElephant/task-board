@@ -548,7 +548,8 @@ def report(tid, d):
             print(f"  {b['id']}. {b['title']}\n    -> " + b["entries"][-1]["text"].replace("\n", "\n    -> "))
         if b["type"] == "memo" and MEMO in info.get("items", []) and b["entries"] and b["entries"][-1]["who"] == "me":
             print("  메모:\n    -> " + b["entries"][-1]["text"].replace("\n", "\n    -> "))
-    print("→ task.md 를 다시 읽고 질문마다 ⇒ 로 반영(결정된 건 [v]) 한 뒤" + (f" board push {tid} 로 아티팩트에도 올리고," if HUB else "") + " board wait 를 다시 건다.")
+    push = HUB and not local_only(d / "task.md")
+    print("→ task.md 를 다시 읽고 질문마다 ⇒ 로 반영(결정된 건 [v]) 한 뒤" + (f" board push {tid} 로 아티팩트에도 올리고," if push else "") + " board wait 를 다시 건다.")
 
 
 def cmd_wait(a):
@@ -632,7 +633,8 @@ def session_key(session):
 
 
 def session_tasks(session):
-    return [t for t in all_ids() if not t.startswith("txt:") and summary(t)["session"] == session and summary(t)["status"] != "끝"]
+    return [t for t in all_ids() if not t.startswith("txt:") and summary(t)["session"] == session and summary(t)["status"] != "끝"
+            and not local_only(resolve(t)[0])]
 
 
 def page_for(session, also=()):
@@ -687,11 +689,19 @@ def remote(d):
         return {}
 
 
+def local_only(f):
+    """문서 머리 `local: yes` — 회사 내부 자료(결재 번호·금액·사람 이름 등)가 있어 아티팩트(claude.ai)로 안 보내는 작업.
+    11-04 문서업무 세션 요청(사용자 결정 Q10=A: amaranth-docs 는 로컬 전용)."""
+    return split(f.read_text(encoding="utf-8", errors="replace"))[0].get("local", "").lower() in ("yes", "true", "1", "예")
+
+
 def unpushed(tid):
-    """문서가 마지막으로 아티팩트에 올린 뒤 바뀌었나(목록 주소가 없으면 늘 False)."""
+    """문서가 마지막으로 아티팩트에 올린 뒤 바뀌었나(목록 주소가 없거나 로컬 전용이면 늘 False)."""
     if not HUB or tid.startswith("txt:"):
         return False
     f, d = resolve(tid)
+    if local_only(f):
+        return False
     return f.stat().st_mtime > remote(d).get("at", 0)
 
 
@@ -703,6 +713,8 @@ def cmd_push(a):
     f, d = resolve(a.task)
     if d is None:
         sys.exit("txt 문서는 안 됩니다")
+    if local_only(f):
+        sys.exit(f"{a.task} 는 로컬 전용(local: yes)이라 아티팩트로 안 보냅니다.")
     s = summary(a.task)
     if not s["session"]:
         sys.exit("문서 머리에 session: 이 없습니다 — '이름 [ref]' 를 넣고 다시")

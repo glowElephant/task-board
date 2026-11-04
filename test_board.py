@@ -55,4 +55,9 @@ assert "## 메모\n-> 새 메모" in board.add_answer("본문만", board.MEMO, "
 assert board.add_answer(DOC, "Q1", "  ") == DOC
 
 assert board.split(board.set_meta(DOC, "status", "끝"))[0]["status"] == "끝"
+assert not board.local_only.__doc__ is None
+import tempfile, pathlib as _p
+_f = _p.Path(tempfile.mkdtemp()) / "task.md"
+_f.write_text("---\ntitle: x\nlocal: yes\n---\n본문\n"); assert board.local_only(_f)
+_f.write_text("---\ntitle: x\n---\n본문\n"); assert not board.local_only(_f)
 print("ok")
