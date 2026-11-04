@@ -364,7 +364,21 @@ function renderTask() {
       h('button', { type: 'button', textContent: doneNow ? '다시 진행' : '끝으로', onclick: async () => { cur = await api('/api/status', { id: t.id, done: !doneNow }); await refreshList(); renderTask(); } }),
     ] : [])));
   const out = [head];
-  if (R) out.push(h('div', { className: 'banner' }, h('span', { textContent: `바깥에서 보는 화면 — PC 내용을 ${when(R.at)} 에 맞췄습니다. 바뀌면 30초 안쪽으로 다시 맞춥니다.` })));
+  if (R) {   // 자동 갱신 없음(11-04 사용자 "다시 띄우면 되잖아") — 이 버튼이나 [보내기] 때만 중계 세션이 다시 올린다
+    const msg = h('span', { textContent: `바깥에서 보는 화면 — PC 내용을 ${when(R.at)} 에 맞췄습니다.` });
+    const btn = h('button', { type: 'button', textContent: '최신으로', title: '중계 세션이 PC 내용으로 다시 올립니다 — 10~20초' });
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        if (!comments) throw new Error('이 화면에선 쓸 수 없습니다(댓글 권한)');
+        const can = await comments.canSendToClaude().catch(() => 'off');
+        if (can !== 'available') throw new Error(why[can] || can);
+        await comments.sendToClaude({ anchor: await comments.anchorFor($('#page')), text: '[board sync]\n최신으로 맞춰 주세요' });
+        msg.textContent = '요청했습니다 — 10~20초 뒤 화면이 새 내용으로 다시 열립니다.';
+      } catch (e) { msg.textContent = '실패: ' + e.message; btn.disabled = false; }
+    };
+    out.push(h('div', { className: 'banner' }, msg, btn));
+  }
   else if (t.kind === 'task' && !doneNow && !t.listening)
     out.push(h('div', { className: 'banner' }, h('span', { textContent: (t.unread ? '보낸 것이 아직 안 읽혔습니다 — ' : '') +
       '이 세션은 지금 듣고 있지 않아 [보내기]해도 바로 깨어나지 않습니다(PC 메모리가 모자라면 세션의 대기가 꺼집니다). 그 세션 채팅에 "Task Board 봐", 또는 아무 세션에 "Task Board 깨워 줘"라고 해 주세요.' })));

@@ -643,25 +643,6 @@ def cmd_snapshot(a):
     print(f"{out} — 작업 {len(ids)}개 · {len(page) // 1024} KB")
 
 
-def cmd_watch(a):
-    """중계용 — 진행 중 작업 문서가 바깥용 한 장(a.than)보다 새로워지면 끝난다(조용해질 때까지 a.quiet 초, 길어도 30초 모아서).
-    11-04 사용자 "갱신은 동기화가 안되네" — 20초 조용/90초 모음이면 세션들이 계속 고칠 때 1분 넘게 늦어 5초/30초로 줄였다.
-    0 = 바뀜(snapshot 다시 만들어 올리고 다시 건다) · 3 = 시간 초과(다시 건다)."""
-    ref, first = pathlib.Path(a.than).expanduser(), None
-    deadline = time.time() + a.max * 60
-    while time.time() < deadline:
-        base = ref.stat().st_mtime if ref.exists() else 0
-        latest = max((p.stat().st_mtime for p in BOARD.glob("*/task.md")), default=0)
-        if latest > base:
-            first = first or time.time()
-            if time.time() - latest >= a.quiet or time.time() - first >= 30:
-                print(f"바뀜 — board snapshot {a.than} 로 다시 만들어 Artifact 로 올리고 board watch 를 다시 건다.")
-                return 0
-        time.sleep(a.poll)
-    print(f"{a.max}분 동안 바뀐 것 없음 — board watch 를 다시 건다.")
-    return 3
-
-
 def cmd_reply(a):
     """바깥 화면의 [보내기]·[저장]을 파일에 써 넣는다(중계 세션이 댓글을 받아 부른다). 글 속 ![](로컬 파일) 은 작업 img/ 로 옮긴다.
     담당 세션이 안 듣고 있으면 SendMessage 로 깨울 문구를 찍는다."""
@@ -720,11 +701,6 @@ def main(argv=None):
     sub.add_parser("orphans", help="보냈는데 듣는 세션이 없어 안 읽힌 작업과 깨울 메시지")
     sn = sub.add_parser("snapshot", help="바깥(아티팩트)용 한 장 만들기")
     sn.add_argument("out")
-    wt = sub.add_parser("watch", help="중계용 — 작업 문서가 바뀌면 끝남")
-    wt.add_argument("--than", required=True, help="board snapshot 이 만든 파일")
-    wt.add_argument("--quiet", type=float, default=5)
-    wt.add_argument("--max", type=float, default=110)
-    wt.add_argument("--poll", type=float, default=3)
     rp = sub.add_parser("reply", help="바깥 화면에서 온 답을 문서에 넣기")
     rp.add_argument("task")
     rp.add_argument("item", help="Q1 같은 질문 id, 또는 메모")
@@ -738,7 +714,7 @@ def main(argv=None):
         return print(url(a.task))
     try:
         return {"new": cmd_new, "wait": cmd_wait, "done": cmd_done, "list": cmd_list, "orphans": cmd_orphans,
-                "snapshot": cmd_snapshot, "watch": cmd_watch, "reply": cmd_reply}[a.cmd](a)
+                "snapshot": cmd_snapshot, "reply": cmd_reply}[a.cmd](a)
     except KeyError as e:
         sys.exit(f"없는 작업: {e} — board list 로 확인")
 

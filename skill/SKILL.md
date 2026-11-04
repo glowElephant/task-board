@@ -91,9 +91,10 @@ A 막는다(추천 — 이유 한 줄) · B 경고만 · C 그대로
 PC 화면과 같은 코드·같은 내용의 아티팩트가 있다(원본은 PC 파일 하나). 사용자는 밖에서 폰 Claude 앱으로 보고 답한다.
 **세션들이 할 일은 없다** — 질문 쓰기·`board wait` 그대로. 아래는 중계를 맡은 세션 하나(주소·담당은 `~/personal/board/CLAUDE.md` "현재 상태")만 한다.
 
-- `board watch --than <html>` 를 백그라운드로 건다. exit 0 → `board snapshot <html>` → 같은 파일 경로로 Artifact publish → 다시 건다. exit 3 → 다시 건다.
+- 자동 갱신은 없다(11-04 사용자). 다시 올리는 때는 둘뿐 — 댓글 `[board sync]`(화면의 [최신으로]) 와 아래 [보내기]·[저장] 처리 뒤. 올리기 = `board snapshot <html>` → 같은 경로로 Artifact publish.
 - 아티팩트에서 [보내기]·[저장]은 댓글 "Claude 에게 보내기"로 온다 — 첫 줄 `[board send|save] <작업> <질문id|메모>`, 다음 줄부터 사용자 글.
   1. 글 속 `![](https://…)` 이미지는 Artifact `read` 의 `path`(asset id)로 받아 로컬 경로로 바꾼다.
   2. 글을 파일로 쓰고 `board reply <작업> <질문id> --file <파일>`(저장이면 `--save`). "안 듣는 중"이 찍히면 `ListAgents` 뒤 그 세션에 찍힌 문구로 `SendMessage`.
   3. 그 댓글 스레드에 한 줄 답("반영 — <세션> 에 전달")하고 resolve.
-  4. 감시를 기다리지 말고 바로 `board snapshot` → publish — 사용자는 보낸 화면을 보고 있다(11-04 "갱신은 동기화가 안되네").
+  4. 바로 `board snapshot` → publish — 사용자는 보낸 화면을 보고 있다.
+- 세션이 바쁠 때 온 댓글은 백그라운드 자동 답글이 대신 답하고 `board reply` 는 안 한다 — "Auto-replied" 알림이 오면 그 스레드를 읽고 `[board …]` 면 위 1~4 를 한다(자동 답글은 다시 달지 말고 resolve 만).
