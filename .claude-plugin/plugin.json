@@ -1,0 +1,7 @@
+{
+  "name": "task-board",
+  "version": "0.1.0",
+  "description": "Claude Code 세션 여러 개가 사용자에게 물을 것(결정·승인·확인)을 채팅 대신 작업별 문서로 모은다. PC 화면(localhost) + 밖에서 보는 아티팩트, 보내기 하면 그 세션이 깨어나 반영한다.",
+  "author": { "name": "glowElephant", "url": "https://github.com/glowElephant" },
+  "hooks": "./hooks/hooks.json"
+}

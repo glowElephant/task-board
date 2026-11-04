@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "task-board",
+  "description": "Task Board — 세션들이 물을 것을 작업별로 모으는 보드",
+  "owner": { "name": "glowElephant", "url": "https://github.com/glowElephant" },
+  "plugins": [
+    {
+      "name": "task-board",
+      "description": "세션들이 사용자에게 물을 것을 작업별 문서로 모으고, [보내기]로 그 세션을 깨운다. PC 화면 + 밖에서 보는 아티팩트.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}

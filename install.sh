@@ -4,32 +4,11 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 
-bin="${XDG_BIN_HOME:-$HOME/.local/bin}"
-mkdir -p "$bin" "$HOME/.claude/skills"
-chmod +x "$here/board.py"
-ln -sfn "$here/board.py" "$bin/board"
-ln -sfn "$here/skill" "$HOME/.claude/skills/board"
-
-cfg="${XDG_CONFIG_HOME:-$HOME/.config}/board"
-mkdir -p "$cfg"
-[ -f "$cfg/env" ] || printf 'BOARD_DIR=%s\nBOARD_PORT=8770\n# 옛 txt 문서 폴더(탭으로 보여 주기만) — 여럿이면 : 로\nBOARD_EXTRA=\n' "$HOME/board" > "$cfg/env"
-
-unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/board.service"
-mkdir -p "$(dirname "$unit")"
-cat > "$unit" <<EOF
-[Unit]
-Description=board (Task Board)
-
-[Service]
-ExecStart=/usr/bin/env python3 $here/board.py serve
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-EOF
-systemctl --user daemon-reload
-systemctl --user enable board.service >/dev/null
-systemctl --user restart board.service
+# 플러그인으로 안 깔고 이 저장소를 직접 쓰는 PC 용 — 스킬 링크와 전역 CLAUDE.md 규칙까지 넣는다.
+# (플러그인으로 깔면 스킬은 플러그인이, 규칙은 세션 시작 훅이 넣으니 이건 필요 없다 — 둘 다 하면 규칙이 두 번 들어간다.)
+mkdir -p "$HOME/.claude/skills"
+ln -sfn "$here/skills/board" "$HOME/.claude/skills/board"
+python3 "$here/board.py" setup
 
 md="$HOME/.claude/CLAUDE.md"
 touch "$md"
@@ -44,4 +23,4 @@ open(md, "w", encoding="utf-8").write(s)
 PY
 
 sleep 1
-systemctl --user is-active --quiet board.service && echo "Task Board 설치 완료 — $("$bin/board" url)" || { echo "서버가 안 떴습니다: journalctl --user -u board -n 20"; exit 1; }
+systemctl --user is-active --quiet board.service && echo "Task Board 설치 완료 — $(python3 "$here/board.py" url)" || { echo "서버가 안 떴습니다: journalctl --user -u board -n 20"; exit 1; }

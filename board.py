@@ -627,7 +627,7 @@ IMG_ONE, IMG_ALL = 3_000_000, 10_000_000
 
 
 def session_key(session):
-    """세션 아티팩트 키 — 'RBQ 버그픽스 [756bdf]' → '756bdf'(이름이 바뀌어도 ref 는 그대로). ref 가 없으면 이름을 안전한 글자로."""
+    """세션 아티팩트 키 — '버그 고치기 [756bdf]' → '756bdf'(이름이 바뀌어도 ref 는 그대로). ref 가 없으면 이름을 안전한 글자로."""
     m = re.search(r"\[([0-9a-f]+)\]\s*$", session or "")
     return m.group(1) if m else (re.sub(r"[^A-Za-z0-9_-]", "_", session or "unknown")[:60] or "unknown")
 
@@ -691,7 +691,7 @@ def remote(d):
 
 def local_only(f):
     """문서 머리 `local: yes` — 회사 내부 자료(결재 번호·금액·사람 이름 등)가 있어 아티팩트(claude.ai)로 안 보내는 작업.
-    11-04 문서업무 세션 요청(사용자 결정 Q10=A: amaranth-docs 는 로컬 전용)."""
+    2026-11-04 회사 결재 문서를 다루는 작업에서 요청됨."""
     return split(f.read_text(encoding="utf-8", errors="replace"))[0].get("local", "").lower() in ("yes", "true", "1", "예")
 
 
@@ -741,6 +741,55 @@ def cmd_push(a):
     print(f"2) ArtifactData set: url={HUB}  collection=tasks  doc_id={row_id(a.task)}  file_path={d / '.remote' / 'row.json'}" + (f"  if_version={v}" if v else "  (처음 — if_version 없이)"))
     print(f"3) board pushed {a.task} --version <결과 version>")
     print("   버전이 안 맞아 거절되면 결과에 나온 현재 version 으로 2) 를 다시. 아티팩트가 없다고 나오면 board pushed <작업> --reset 뒤 다시 push.")
+
+
+def _set_cfg(key, val):
+    f = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "board" / "env"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    lines = f.read_text(encoding="utf-8").splitlines() if f.is_file() else []
+    lines = [ln for ln in lines if not ln.startswith(key + "=")] + [f"{key}={val}"]
+    write(f, "\n".join(lines) + "\n")
+
+
+def cmd_setup(a):
+    """처음 한 번(여러 번 해도 같음) — 설정 파일 · board 명령 링크 · PC 화면(리눅스 systemd 사용자 서비스) · 목록 아티팩트 안내.
+    플러그인으로 깔았으면 세션 시작 훅이 이걸 안내한다. 이 PC 처럼 install.sh 로 깔면 install.sh 가 부른다."""
+    here = pathlib.Path(__file__).resolve().parent
+    cfgf = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "board" / "env"
+    if not cfgf.is_file():
+        cfgf.parent.mkdir(parents=True, exist_ok=True)
+        write(cfgf, f"BOARD_DIR={HOME / 'board'}\nBOARD_PORT=8770\n# 목록 아티팩트(모든 PC 의 작업) — board setup --hub <주소>\nBOARD_HUB=\n")
+        print(f"설정 만듦: {cfgf}")
+    if a.hub:
+        _set_cfg("BOARD_HUB", a.hub)
+        print(f"목록 아티팩트: {a.hub}")
+    if a.pc:
+        _set_cfg("BOARD_PC", a.pc)
+    bindir = pathlib.Path(os.environ.get("XDG_BIN_HOME") or HOME / ".local" / "bin")
+    bindir.mkdir(parents=True, exist_ok=True)
+    (here / "board.py").chmod(0o755)
+    link = bindir / "board"
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(here / "board.py")
+    print(f"명령: {link} → {here / 'board.py'}" + ("" if shutil.which("board") else f"  (⚠ {bindir} 가 PATH 에 없음)"))
+    if sys.platform.startswith("linux") and shutil.which("systemctl") and not a.no_server:
+        unit = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "systemd" / "user" / "board.service"
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        write(unit, f"[Unit]\nDescription=board (Task Board)\n\n[Service]\nExecStart=/usr/bin/env python3 {here / 'board.py'} serve\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n")
+        for cmd in (["daemon-reload"], ["enable", "board.service"], ["restart", "board.service"]):
+            subprocess.run(["systemctl", "--user", *cmd], check=False, capture_output=True)
+        print(f"PC 화면: http://localhost:{PORT}  (사용자 서비스 board)")
+    elif not a.no_server:
+        print(f"PC 화면은 수동 — `python3 {here / 'board.py'} serve` (리눅스가 아니면 자리 비움·PC 알림은 아직 안 됨). 아티팩트는 그대로 쓴다.")
+    hub = a.hub or _config().get("BOARD_HUB", "")
+    if not hub:
+        page = cfgf.parent / "hub.html"
+        a2 = argparse.Namespace(out=str(page))
+        cmd_hubpage(a2)
+        print("목록 아티팩트(밖에서 보기)가 아직 없습니다 — 세션이 이렇게 만든다(한 번만):")
+        print(f'  Artifact publish: file_path={page}  icon="checklist"  capabilities={{"db": {{}}}}')
+        print("  → board setup --hub <결과 주소>")
 
 
 def cmd_hubpage(a):
@@ -835,6 +884,10 @@ def main(argv=None):
     pu.add_argument("task")
     pu.add_argument("--out", help="만들 파일을 둘 폴더(기본 <작업>/.remote) — Artifact 가 거절하면 세션 scratchpad 로")
     sub.add_parser("hubpage", help="목록 아티팩트 화면 만들기(화면 코드 고쳤을 때만)").add_argument("out")
+    su = sub.add_parser("setup", help="처음 설정 — 설정 파일·명령 링크·PC 화면·목록 아티팩트 안내(여러 번 해도 같음)")
+    su.add_argument("--hub", help="목록 아티팩트 주소를 저장")
+    su.add_argument("--pc", help="이 PC 이름(기본 hostname)")
+    su.add_argument("--no-server", action="store_true", help="PC 화면(서버)은 안 켬")
     pd = sub.add_parser("pushed", help="push 뒤 결과(아티팩트 주소·목록 줄 버전) 기록")
     pd.add_argument("task")
     pd.add_argument("--url")
@@ -853,7 +906,7 @@ def main(argv=None):
         return print(url(a.task))
     try:
         return {"new": cmd_new, "wait": cmd_wait, "done": cmd_done, "list": cmd_list, "orphans": cmd_orphans,
-                "push": cmd_push, "pushed": cmd_pushed, "hubpage": cmd_hubpage, "reply": cmd_reply}[a.cmd](a)
+                "push": cmd_push, "pushed": cmd_pushed, "hubpage": cmd_hubpage, "setup": cmd_setup, "reply": cmd_reply}[a.cmd](a)
     except KeyError as e:
         sys.exit(f"없는 작업: {e} — board list 로 확인")
 
