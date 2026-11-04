@@ -224,6 +224,38 @@ def resolve(tid):
     return d / "task.md", d
 
 
+_heard = {"at": 0.0, "ids": set()}
+
+
+def listeners():
+    """지금 `board wait` 가 듣고 있는 작업 — /proc 명령줄에서 읽는다(세션의 옛 코드 wait 도 잡힌다). 2초 캐시.
+    Claude Code 는 메모리가 모자라면 쉬는 세션의 백그라운드 셸을 정리한다 — 그러면 [보내기]가 아무도 못 깨운다(11-04 실측 4개 세션)."""
+    if time.time() - _heard["at"] < 2:
+        return _heard["ids"]
+    ids = set()
+    for c in pathlib.Path("/proc").glob("[0-9]*/cmdline"):
+        try:
+            args = [x.decode(errors="replace") for x in c.read_bytes().split(b"\0") if x]
+        except OSError:
+            continue
+        if "wait" not in args or not any(pathlib.Path(x).name in ("board", "board.py") for x in args[:args.index("wait")]):
+            continue
+        rest, i = args[args.index("wait") + 1:], 0
+        while i < len(rest):
+            if rest[i].startswith("--"):
+                i += 1 if "=" in rest[i] else 2   # --max 110 / --max=110
+                continue
+            ids.add(rest[i])
+            i += 1
+    _heard.update(at=time.time(), ids=ids)
+    return ids
+
+
+def unread(d):
+    sent, seen = d / ".sent", d / ".seen"
+    return sent.exists() and (not seen.exists() or sent.stat().st_mtime_ns > seen.stat().st_mtime_ns)
+
+
 def summary(tid):
     f, d = resolve(tid)
     text = f.read_text(encoding="utf-8", errors="replace")
@@ -241,7 +273,7 @@ def summary(tid):
             "status": "끝" if meta.get("status", "") in DONE else "진행 중",
             "mine": sum(i["turn"] == "me" for i in items), "waiting": sum(i["turn"] == "claude" for i in items),
             "asks": [f"{i['id']}. {i['title']}" for i in items if i["turn"] == "me"],
-            "mtime": f.stat().st_mtime}
+            "listening": tid in listeners(), "unread": unread(d), "mtime": f.stat().st_mtime}
 
 
 def all_ids():
@@ -525,8 +557,7 @@ def cmd_wait(a):
     while time.time() < deadline:
         ready = []
         for t, d in dirs.items():
-            sent, seen = d / ".sent", d / ".seen"
-            if sent.exists() and (not seen.exists() or sent.stat().st_mtime_ns > seen.stat().st_mtime_ns):
+            if unread(d):
                 ready.append((t, d))
         if ready:
             for t, d in ready:
@@ -572,6 +603,20 @@ def cmd_done(a):
     print(f"끝으로 표시: {a.task}")
 
 
+def cmd_orphans(a):
+    """보냈는데 듣는 세션이 없어 안 읽힌 작업 — 아무 세션이나 이걸 보고 그 세션에 SendMessage 로 깨워 준다."""
+    found = 0
+    for t in all_ids():
+        s = summary(t)
+        if s.get("unread") and not s.get("listening"):
+            found += 1
+            print(f"{t}\t{s['session']}\t{s['title'][:60]}")
+            print(f"  SendMessage → {s['session']}: 확인판 {t} 에 사용자가 [보내기] 했는데 이 세션의 board wait 가 꺼져 있어 못 깼습니다."
+                  f" `board wait {t}` 를 Bash run_in_background 로 다시 걸어 주세요 — 바로 끝나며 보낸 내용을 보여 줍니다.")
+    if not found:
+        print("안 읽힌 작업 없음")
+
+
 def cmd_list(a):
     for s in sorted((summary(t) for t in all_ids()), key=lambda s: (s["status"] == "끝", -s["mine"], -s["mtime"])):
         when = datetime.datetime.fromtimestamp(s["mtime"]).strftime("%m-%d %H:%M")
@@ -593,6 +638,7 @@ def main(argv=None):
     w.add_argument("--poll", type=float, default=2)
     sub.add_parser("done").add_argument("task")
     sub.add_parser("list")
+    sub.add_parser("orphans", help="보냈는데 듣는 세션이 없어 안 읽힌 작업과 깨울 메시지")
     sub.add_parser("url").add_argument("task", nargs="?", default="")
     a = p.parse_args(argv)
     if a.cmd == "serve":
@@ -600,7 +646,7 @@ def main(argv=None):
     if a.cmd == "url":
         return print(url(a.task))
     try:
-        return {"new": cmd_new, "wait": cmd_wait, "done": cmd_done, "list": cmd_list}[a.cmd](a)
+        return {"new": cmd_new, "wait": cmd_wait, "done": cmd_done, "list": cmd_list, "orphans": cmd_orphans}[a.cmd](a)
     except KeyError as e:
         sys.exit(f"없는 작업: {e} — board list 로 확인")
 
