@@ -96,3 +96,4 @@ PC 화면과 같은 코드·같은 내용의 아티팩트가 있다(원본은 PC
   1. 글 속 `![](https://…)` 이미지는 Artifact `read` 의 `path`(asset id)로 받아 로컬 경로로 바꾼다.
   2. 글을 파일로 쓰고 `board reply <작업> <질문id> --file <파일>`(저장이면 `--save`). "안 듣는 중"이 찍히면 `ListAgents` 뒤 그 세션에 찍힌 문구로 `SendMessage`.
   3. 그 댓글 스레드에 한 줄 답("반영 — <세션> 에 전달")하고 resolve.
+  4. 감시를 기다리지 말고 바로 `board snapshot` → publish — 사용자는 보낸 화면을 보고 있다(11-04 "갱신은 동기화가 안되네").

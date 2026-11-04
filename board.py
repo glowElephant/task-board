@@ -644,7 +644,8 @@ def cmd_snapshot(a):
 
 
 def cmd_watch(a):
-    """중계용 — 진행 중 작업 문서가 바깥용 한 장(a.than)보다 새로워지면 끝난다(조용해질 때까지 a.quiet 초, 길어도 90초 모아서).
+    """중계용 — 진행 중 작업 문서가 바깥용 한 장(a.than)보다 새로워지면 끝난다(조용해질 때까지 a.quiet 초, 길어도 30초 모아서).
+    11-04 사용자 "갱신은 동기화가 안되네" — 20초 조용/90초 모음이면 세션들이 계속 고칠 때 1분 넘게 늦어 5초/30초로 줄였다.
     0 = 바뀜(snapshot 다시 만들어 올리고 다시 건다) · 3 = 시간 초과(다시 건다)."""
     ref, first = pathlib.Path(a.than).expanduser(), None
     deadline = time.time() + a.max * 60
@@ -653,7 +654,7 @@ def cmd_watch(a):
         latest = max((p.stat().st_mtime for p in BOARD.glob("*/task.md")), default=0)
         if latest > base:
             first = first or time.time()
-            if time.time() - latest >= a.quiet or time.time() - first >= 90:
+            if time.time() - latest >= a.quiet or time.time() - first >= 30:
                 print(f"바뀜 — board snapshot {a.than} 로 다시 만들어 Artifact 로 올리고 board watch 를 다시 건다.")
                 return 0
         time.sleep(a.poll)
@@ -721,7 +722,7 @@ def main(argv=None):
     sn.add_argument("out")
     wt = sub.add_parser("watch", help="중계용 — 작업 문서가 바뀌면 끝남")
     wt.add_argument("--than", required=True, help="board snapshot 이 만든 파일")
-    wt.add_argument("--quiet", type=float, default=20)
+    wt.add_argument("--quiet", type=float, default=5)
     wt.add_argument("--max", type=float, default=110)
     wt.add_argument("--poll", type=float, default=3)
     rp = sub.add_parser("reply", help="바깥 화면에서 온 답을 문서에 넣기")
