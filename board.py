@@ -687,6 +687,8 @@ def cmd_push(a):
     (d / ".remote").mkdir(exist_ok=True)
     write(d / ".remote" / "state.json", json.dumps(st))
     print(f"[push] {a.task} — 아래 순서대로 부르세요.")
+    if st.get("url"):   # 막 만든 아티팩트는 연결이 붙기 전 온 댓글을 놓칠 수 있다(11-04 실측) — 올릴 때마다 먼저 줍는다
+        print(f"0) ArtifactComments read: url={st['url']} — 열린 스레드의 [board …] 중 문서에 아직 없는 것을 board reply 로 먼저 넣고 resolve")
     if st.get("url"):
         print(f"1) Artifact publish: file_path={page}  url={st['url']}")
     else:
