@@ -51,6 +51,10 @@ aside { border-right: 1px solid var(--line); background: var(--surface); overflo
 .grp-head .n { color: var(--muted); font-weight: 400; font-size: 12px; }
 .grp-body { padding: 0 8px 8px; display: grid; gap: 4px; }
 .grp-head[aria-expanded="false"] + .grp-body { display: none; }
+.grp-head.pc { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); background: var(--sunk); }
+.grp-head.pc[aria-expanded="false"] + .pc-body { display: none; }
+.answer-link { display: inline-block; font-weight: 600; color: var(--link); text-decoration: none; padding: 6px 0; }
+.answer-link:hover { text-decoration: underline; }
 .trow { width: 100%; text-align: left; border: 1px solid transparent; border-radius: 8px; background: none; padding: 8px 10px;
   display: grid; gap: 3px; }
 .trow:hover { background: var(--sunk); }
@@ -148,12 +152,33 @@ mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'neutral', secur
 
 let tasks = [], cur = null, view = 'task', drafts = {}, stale = false;
 
-// 바깥(아티팩트)에서 열린 경우 — board snapshot 이 window.BOARD 에 진행 중 작업을 심는다. 원본은 PC 파일 하나:
-// [보내기]·[저장]은 Claude 에게 보내기(댓글)로 중계 세션을 깨우고, 중계 세션이 파일에 써 넣은 뒤 이 페이지를 다시 올린다.
+// 아티팩트로 열린 경우(window.BOARD) — 두 가지:
+//  · 세션 한 장(R.mode === 'session'): board push 가 그 세션의 진행 중 작업을 심는다. [보내기] = Claude 에게 보내기 → 이 아티팩트를 올린 그 세션만 깬다.
+//  · 목록(R.mode === 'hub'): 각 세션이 db tasks 에 쓴 줄을 실시간으로 읽는다. 왼쪽 PC·세션 목록과 내용은 PC 화면과 같고, 답은 작업 아티팩트에서.
 const R = window.BOARD || null;
+const HUB = R && R.mode === 'hub';
+let hubReady = null;
+if (HUB) hubReady = new Promise(done => {
+  const fail = msg => { $('#page').replaceChildren(h('p', { className: 'empty', textContent: msg })); done(); };
+  const timer = setTimeout(() => fail('목록을 못 불러왔습니다 — 잠시 뒤 다시 열어 주세요.'), 10000);
+  (window.claude ? claude.use('db') : Promise.resolve(null)).then(db => {
+    if (!db) { clearTimeout(timer); return fail('이 화면에선 목록을 읽을 수 없습니다(claude.ai 로그인 필요).'); }
+    db.collection('tasks').onSnapshot(snap => {
+      clearTimeout(timer);
+      R.tasks = []; R.details = {};
+      for (const d of snap.docs) {
+        const r = d.data() || {};
+        const t = { id: d.id, kind: 'task', title: r.title || r.task, session: r.session || '', pc: r.pc || '?', status: r.status || '진행 중',
+          mine: r.mine || 0, waiting: r.waiting || 0, asks: r.asks || [], url: r.url || '', mtime: r.updated || 0 };
+        R.tasks.push(t); R.details[d.id] = { ...t, blocks: r.blocks || [] };
+      }
+      done(); if (cur) refreshList();
+    }, e => { clearTimeout(timer); fail('목록을 못 읽었습니다: ' + (e && e.message || e)); });
+  });
+});
 let comments = null, assets = null;
 if (R && window.claude) { claude.use('comments').then(c => comments = c); claude.use('assets').then(a => assets = a); }
-const why = { no_session: '받을 세션이 없습니다 — PC 의 중계 세션이 꺼져 있습니다', writers_only: '편집 권한이 있어야 보낼 수 있습니다', off: '이 화면에선 보내기가 꺼져 있습니다' };
+const why = { no_session: '이 세션이 지금 꺼져 있습니다', writers_only: '편집 권한이 있어야 보낼 수 있습니다', off: '이 화면에선 보내기가 꺼져 있습니다' };
 const bytes = t => new TextEncoder().encode(t).length;
 async function relay(tid, item, text, send) {
   if (!comments) throw new Error('이 화면에선 보낼 수 없습니다(댓글 권한)');
@@ -198,8 +223,8 @@ function md(text, tid) {
     const src = img.getAttribute('src') || '';
     if (/^(https?:|data:|\/)/.test(src)) return;
     if (!R) { img.src = `/files/${encodeURIComponent(tid)}/${src}`; return; }
-    if (R.images[tid + '/' + src]) img.src = R.images[tid + '/' + src];
-    else img.replaceWith(h('span', { className: 'pill claude', textContent: '사진(커서 못 실음) — PC 에서 보기' }));
+    if ((R.images || {})[tid + '/' + src]) img.src = R.images[tid + '/' + src];
+    else img.replaceWith(h('span', { className: 'pill claude', textContent: HUB ? '사진 — 작업 아티팩트에서 보기' : '사진(커서 못 실음) — PC 에서 보기' }));
   });
   box.querySelectorAll('pre > code.language-mermaid').forEach(code => {
     const div = h('div', { className: 'mermaid', textContent: code.textContent });
@@ -216,8 +241,8 @@ let folded = store.get('board.folded', {});   // 세션별로 사용자가 접�
 function groups() {
   const open = tasks.filter(t => t.status !== '끝'), by = new Map();
   for (const t of open) {
-    const key = t.kind === 'txt' ? 'txt' : (t.session || '세션 미상');
-    if (!by.has(key)) by.set(key, { key, name: key === 'txt' ? 'txt 문서 (옛 형식)' : shortSession(key), ref: (key.match(/\[([0-9a-f]+)\]$/) || [])[1] || '', items: [] });
+    const key = t.kind === 'txt' ? 'txt' : (HUB ? t.pc + ' · ' : '') + (t.session || '세션 미상');
+    if (!by.has(key)) by.set(key, { key, pc: t.pc, name: key === 'txt' ? 'txt 문서 (옛 형식)' : shortSession(t.session || '세션 미상'), ref: (key.match(/\[([0-9a-f]+)\]$/) || [])[1] || '', items: [] });
     by.get(key).items.push(t);
   }
   const gs = [...by.values()];
@@ -241,9 +266,30 @@ function taskRow(t) {
   b.onclick = () => open(t.id);
   return b;
 }
+function grpHead(key, name, n, mine, isOpen, cls) {
+  const head = h('button', { type: 'button', className: 'grp-head' + (cls ? ' ' + cls : ''), title: key },
+    h('span', { className: 'chev', textContent: '▸' }), h('span', { className: 'name', textContent: name }),
+    h('span', { className: 'n', textContent: n }), mine ? h('span', { className: 'count', textContent: mine }) : null);
+  head.setAttribute('aria-expanded', String(isOpen));
+  head.onclick = () => { folded[key] = isOpen; store.set('board.folded', folded); renderTabs(); };
+  return head;
+}
 function renderTabs() {
   const box = $('#groups'); box.replaceChildren();
-  for (const g of groups()) {
+  if (HUB) {   // PC 마다 접히는 묶음 → 그 안에 세션 묶음(PC 화면과 같은 모양)
+    const pcs = new Map();
+    for (const g of groups()) { if (!pcs.has(g.pc)) pcs.set(g.pc, []); pcs.get(g.pc).push(g); }
+    for (const [pc, gs] of pcs) {
+      const mine = gs.reduce((n, g) => n + g.mine, 0), key = 'pc:' + pc;
+      const isOpen = folded[key] === undefined ? true : !folded[key];
+      const body = h('div', { className: 'pc-body' });
+      for (const g of gs) {
+        const gOpen = folded[g.key] === undefined ? g.mine > 0 : !folded[g.key];
+        body.append(h('section', { className: 'grp' }, grpHead(g.key, g.name, g.items.length > 1 ? `작업 ${g.items.length}` : '', g.mine, gOpen), h('div', { className: 'grp-body' }, g.items.map(taskRow))));
+      }
+      box.append(h('section', { className: 'pc-grp' }, grpHead(key, 'PC ' + pc, `세션 ${gs.length}`, mine, isOpen, 'pc'), body));
+    }
+  } else for (const g of groups()) {
     const isOpen = folded[g.key] === undefined ? g.mine > 0 : !folded[g.key];
     const head = h('button', { type: 'button', className: 'grp-head', ariaExpanded: String(isOpen), title: g.key },
       h('span', { className: 'chev', textContent: '▸' }), h('span', { className: 'name', textContent: g.name }),
@@ -257,8 +303,9 @@ function renderTabs() {
   $('#doneBtn').textContent = `끝난 작업 ${done}`;
   const mine = tasks.filter(t => t.status !== '끝').reduce((n, t) => n + t.mine, 0);
   $('#total').replaceChildren(...(mine ? [h('span', { className: 'count', textContent: mine })] : []));
-  $('#sub').textContent = `세션 ${groups().filter(g => g.key !== 'txt').length} · 작업 ${tasks.filter(t => t.status !== '끝').length}`;
-  document.title = R && R.single ? (tasks[0] ? tasks[0].title : 'Task Board') : mine ? `(${mine}) Task Board` : 'Task Board';
+  $('#sub').textContent = (HUB ? `PC ${new Set(tasks.filter(t => t.status !== '끝').map(t => t.pc)).size} · ` : '') + `세션 ${groups().filter(g => g.key !== 'txt').length} · 작업 ${tasks.filter(t => t.status !== '끝').length}`;
+  const name = R && R.mode === 'session' ? 'Task Board · ' + shortSession(R.session) : 'Task Board';
+  document.title = mine ? `(${mine}) ${name}` : name;
 }
 function keepDrafts() { if (cur) store.set('board.drafts.' + cur.id, drafts); }
 function sorted() { return groups().flatMap(g => g.items); }
@@ -356,6 +403,10 @@ function thread(entries, tid) {
   return h('div', { className: 'thread' }, entries.map(e =>
     h('div', { className: 'say ' + e.who }, h('div', { className: 'who', textContent: e.who === 'me' ? '나' : '세션' }), h('div', { className: 'txt' }, md(e.text, tid)))));
 }
+function answerLink() {   // 목록에서 답하면 목록을 올린 세션이 깬다(=중계) — 답은 그 작업 세션이 올린 작업 아티팩트에서
+  return cur && cur.url ? h('a', { className: 'answer-link', href: cur.url, target: '_blank', rel: 'noopener', textContent: '답하기 — 이 작업 아티팩트 열기 ↗' })
+    : h('span', { className: 'pill claude', textContent: '세션이 아직 작업 아티팩트를 안 올렸습니다' });
+}
 function itemCard(b, tid) {
   const label = { me: '내 차례', claude: '세션 차례', done: '결정' }[b.turn];
   const card = h('section', { className: 'item ' + b.turn, id: 'q-' + b.id },
@@ -363,7 +414,7 @@ function itemCard(b, tid) {
       h('span', { className: 'pill ' + b.turn, textContent: label })));
   if (b.desc) card.append(h('div', { className: 'body' }, md(b.desc, tid)));
   if (b.entries.length) card.append(thread(b.entries, tid));
-  const ed = editor('q:' + b.id, '', tid, b.turn === 'claude' ? '덧붙일 말이 있으면 — 세션이 아직 반영 전입니다' : '답을 적어 주세요 — 추천대로면 "ㅇㅋ"',
+  const ed = HUB ? answerLink() : editor('q:' + b.id, '', tid, b.turn === 'claude' ? '덧붙일 말이 있으면 — 세션이 아직 반영 전입니다' : '답을 적어 주세요 — 추천대로면 "ㅇㅋ"',
     text => api('/api/answer', { id: tid, item: b.id, text }),
     text => api('/api/answer', { id: tid, item: b.id, text, send: true }));
   if (b.turn === 'done') card.append(h('details', { className: 'reopen' }, h('summary', { textContent: '다시 답하기' }), h('div', { className: 'answer' }, ed)));
@@ -385,17 +436,19 @@ function renderTask() {
       h('button', { type: 'button', textContent: doneNow ? '다시 진행' : '끝으로', onclick: async () => { cur = await api('/api/status', { id: t.id, done: !doneNow }); await refreshList(); renderTask(); } }),
     ] : [])));
   const out = [head];
-  if (R && R.single && R.hub) out.unshift(h('a', { href: R.hub, target: '_blank', rel: 'noopener', textContent: '← Task Board 목록' }));
-  if (R) {   // 자동 갱신 없음(11-04 사용자 "다시 띄우면 되잖아") — 이 버튼이나 [보내기] 때만 중계 세션이 다시 올린다
-    const msg = h('span', { textContent: R.single ? `PC(${R.pc}) 문서 ${when(R.at)} 기준 — 세션이 질문·답을 쓸 때마다 다시 올립니다.` : `바깥에서 보는 화면 — PC 내용을 ${when(R.at)} 에 맞췄습니다.` });
-    const btn = h('button', { type: 'button', textContent: '최신으로', title: '중계 세션이 PC 내용으로 다시 올립니다 — 10~20초' });
+  if (R && R.mode === 'session' && R.hub) out.unshift(h('a', { href: R.hub, target: '_blank', rel: 'noopener', textContent: '← Task Board 목록(모든 PC·세션)' }));
+  if (HUB) out.push(h('div', { className: 'banner' }, h('span', { textContent: `${t.pc} · ${shortSession(t.session)} — 세션이 질문·답을 쓸 때마다 바로 바뀝니다. 답은 각 질문의 '답하기'(작업 아티팩트)에서.` }),
+    t.url ? h('a', { className: 'answer-link', href: t.url, target: '_blank', rel: 'noopener', textContent: '작업 아티팩트 ↗' }) : null));
+  else if (R) {   // 세션이 문서를 고칠 때마다 다시 올린다. [최신으로] = 그 세션에게 다시 올려 달라는 요청
+    const msg = h('span', { textContent: `PC ${R.pc} · ${shortSession(R.session)} 의 작업 — 문서 ${when(R.at)} 기준. 세션이 질문·답을 쓸 때마다 다시 올립니다.` });
+    const btn = h('button', { type: 'button', textContent: '최신으로', title: '이 세션이 PC 문서로 다시 올립니다 — 세션이 다른 일 중이면 늦을 수 있음' });
     btn.onclick = async () => {
       btn.disabled = true;
       try {
         if (!comments) throw new Error('이 화면에선 쓸 수 없습니다(댓글 권한)');
         const can = await comments.canSendToClaude().catch(() => 'off');
         if (can !== 'available') throw new Error(why[can] || can);
-        await comments.sendToClaude({ anchor: await comments.anchorFor($('#page')), text: R.single ? `[board sync] ${R.single}\n최신으로 다시 올려 주세요` : '[board sync]\n최신으로 맞춰 주세요' });
+        await comments.sendToClaude({ anchor: await comments.anchorFor($('#page')), text: `[board sync] ${cur.id}\n최신으로 다시 올려 주세요` });
         msg.textContent = '요청했습니다 — 10~20초 뒤 화면이 새 내용으로 다시 열립니다.';
       } catch (e) { msg.textContent = '실패: ' + e.message; btn.disabled = false; }
     };
@@ -415,7 +468,7 @@ function renderTask() {
         const card = h('section', { className: 'item', id: 'q-메모' }, h('div', { className: 'head' }, h('span', { className: 'qt', textContent: '질문과 상관없는 말 · 이미지' })));
         if (b.desc) card.append(h('div', { className: 'body' }, md(b.desc, t.id)));
         if (b.entries.length) card.append(thread(b.entries, t.id));
-        card.append(h('div', { className: 'answer' }, editor('memo', '', t.id, '세션에게 하고 싶은 말 — 텍스트·이미지',
+        card.append(h('div', { className: 'answer' }, HUB ? answerLink() : editor('memo', '', t.id, '세션에게 하고 싶은 말 — 텍스트·이미지',
           text => api('/api/answer', { id: t.id, item: '메모', text }), text => api('/api/answer', { id: t.id, item: '메모', text, send: true }))));
         out.push(card);
       }
@@ -450,9 +503,9 @@ function renderDone() {
 }
 $('#doneBtn').onclick = renderDone;
 if (R) $('#doneBtn').hidden = true;   // 바깥 화면엔 진행 중 작업만 싣는다
-if (R && R.single) { document.querySelector('aside').hidden = true; document.querySelector('.app').style.gridTemplateColumns = '1fr'; }
 
 (async () => {
+  if (hubReady) await hubReady;
   tasks = await api('/api/tasks');
   const want = decodeURIComponent(location.hash.slice(1));
   const first = tasks.find(t => t.id === want) || sorted()[0];

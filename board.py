@@ -625,25 +625,53 @@ def cmd_orphans(a):
 IMG_ONE, IMG_ALL = 3_000_000, 10_000_000
 
 
-def page_for(tid):
-    """작업 아티팩트 한 장 — PC 화면과 같은 코드(web/index.html)에 이 작업만 심는다(window.BOARD.single).
-    사진은 data: 로(장당 3 MB · 합쳐 10 MB 까지, 넘으면 빠지고 화면이 'PC 에서 보기'로 그린다)."""
-    d = detail(tid)
-    text = d.pop("raw")
-    folder, images, total = resolve(tid)[1], {}, 0
-    for rel in sorted(set(re.findall(r"!\[[^\]]*\]\((img/[^)\s]+)\)", text))):
-        f = folder / rel
-        if f.is_file() and f.stat().st_size < IMG_ONE and total + f.stat().st_size < IMG_ALL:
-            total += f.stat().st_size
-            mime = mimetypes.guess_type(f.name)[0] or "image/png"
-            images[f"{tid}/{rel}"] = f"data:{mime};base64," + base64.b64encode(f.read_bytes()).decode()
-    data = {"single": tid, "hub": HUB, "pc": PC, "tasks": [{k: v for k, v in d.items() if k != "blocks"}],
-            "details": {tid: d}, "images": images, "at": time.time()}
+def session_key(session):
+    """세션 아티팩트 키 — 'RBQ 버그픽스 [756bdf]' → '756bdf'(이름이 바뀌어도 ref 는 그대로). ref 가 없으면 이름을 안전한 글자로."""
+    m = re.search(r"\[([0-9a-f]+)\]\s*$", session or "")
+    return m.group(1) if m else (re.sub(r"[^A-Za-z0-9_-]", "_", session or "unknown")[:60] or "unknown")
+
+
+def session_tasks(session):
+    return [t for t in all_ids() if not t.startswith("txt:") and summary(t)["session"] == session and summary(t)["status"] != "끝"]
+
+
+def page_for(session, also=()):
+    """세션 아티팩트 한 장 — PC 화면과 같은 코드(web/index.html)에 그 세션의 진행 중 작업만 심는다(window.BOARD.mode='session').
+    세션마다 한 장인 이유(11-04 사용자 "같은 세션끼리만 두면 되잖아"): [보내기]는 아티팩트를 올린 세션만 깨우니 세션 단위면 충분하고,
+    작업마다 따로면 아티팩트가 너무 많아지고 처음 보내기 허락도 작업마다 묻는다. 사진은 data: 로(장당 3 MB · 합쳐 10 MB)."""
+    ids = list(dict.fromkeys(session_tasks(session) + [t for t in also if t not in session_tasks(session)]))
+    tasks, details, images, total = [], {}, {}, 0
+    for tid in ids:
+        d = detail(tid)
+        text = d.pop("raw")
+        tasks.append({k: v for k, v in d.items() if k != "blocks"})
+        details[tid] = d
+        folder = resolve(tid)[1]
+        for rel in sorted(set(re.findall(r"!\[[^\]]*\]\((img/[^)\s]+)\)", text))):
+            f = folder / rel
+            if f.is_file() and f.stat().st_size < IMG_ONE and total + f.stat().st_size < IMG_ALL:
+                total += f.stat().st_size
+                mime = mimetypes.guess_type(f.name)[0] or "image/png"
+                images[f"{tid}/{rel}"] = f"data:{mime};base64," + base64.b64encode(f.read_bytes()).decode()
+    data = {"mode": "session", "session": session, "hub": HUB, "pc": PC, "tasks": tasks, "details": details, "images": images, "at": time.time()}
     page = (WEB / "index.html").read_text(encoding="utf-8")
-    title = re.sub(r"[<>&]", "", d["title"])[:80]   # 갤러리 이름 = 작업 제목(작업마다 아티팩트가 따로라 구분돼야 한다)
-    page = page.replace("<title>Task Board</title>", f"<title>{title}</title>", 1)
+    name = re.sub(r"[<>&]", "", re.sub(r"\s*\[[0-9a-f]+\]$", "", session or ""))[:60]
+    page = page.replace("<title>Task Board</title>", f"<title>Task Board · {name}</title>", 1)
     js = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
     return page.replace("<script>\nconst $ =", "<script>window.BOARD = " + js + ";</script>\n<script>\nconst $ =", 1)
+
+
+def sess_state(session, upd=None):
+    f = BOARD / ".sessions" / (session_key(session) + ".json")
+    try:
+        st = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        st = {}
+    if upd is not None:
+        st.update(upd)
+        f.parent.mkdir(exist_ok=True)
+        write(f, json.dumps(st, ensure_ascii=False))
+    return st
 
 
 def row_id(tid):
@@ -668,54 +696,71 @@ def unpushed(tid):
 
 
 def cmd_push(a):
-    """작업 아티팩트·목록 줄을 내보낼 준비를 하고, 세션이 부를 도구 호출을 순서대로 찍는다.
+    """세션 아티팩트(그 세션의 진행 중 작업 전부)·목록 줄을 내보낼 준비를 하고, 세션이 부를 도구 호출을 순서대로 찍는다.
     세션이 문서를 고친 그 자리에서 부른다 — 중계 세션 없이 두 곳(로컬 보드·아티팩트)이 같은 문서에서 그려진다(11-04 사용자 결정)."""
     if not HUB:
         sys.exit("BOARD_HUB(목록 아티팩트 주소)가 설정에 없습니다 — ~/.config/board/env")
     f, d = resolve(a.task)
     if d is None:
         sys.exit("txt 문서는 안 됩니다")
-    out = pathlib.Path(a.out).expanduser() if a.out else d / ".remote"
+    s = summary(a.task)
+    if not s["session"]:
+        sys.exit("문서 머리에 session: 이 없습니다 — '이름 [ref]' 를 넣고 다시")
+    out = pathlib.Path(a.out).expanduser() if a.out else BOARD / ".sessions"
     out.mkdir(parents=True, exist_ok=True)
-    st, s = remote(d), summary(a.task)
-    page = out / f"{a.task}.html"
-    write(page, page_for(a.task))
+    ss, key = sess_state(s["session"]), session_key(s["session"])
+    page = out / f"{key}.html"
+    write(page, page_for(s["session"], also=[a.task]))   # 방금 끝낸 작업도 이번 한 번은 '끝'으로 보이게
+    st = remote(d)
+    url = ss.get("url", "")
     row = {"pc": PC, "task": a.task, "title": s["title"], "session": s["session"], "status": s["status"],
-           "mine": s["mine"], "waiting": s["waiting"], "asks": s["asks"][:5], "url": st.get("url", ""), "updated": time.time()}
-    write(out / "row.json", json.dumps(row, ensure_ascii=False))
-    st.update(page=str(page), row=str(out / "row.json"))
+           "mine": s["mine"], "waiting": s["waiting"], "asks": s["asks"][:5], "url": (url + "#" + a.task) if url else "", "updated": time.time(),
+           "blocks": detail(a.task)["blocks"]}   # 목록이 PC 화면처럼 오른쪽에 내용을 그린다(답은 세션 아티팩트에서)
     (d / ".remote").mkdir(exist_ok=True)
-    write(d / ".remote" / "state.json", json.dumps(st))
-    print(f"[push] {a.task} — 아래 순서대로 부르세요.")
-    if st.get("url"):   # 막 만든 아티팩트는 연결이 붙기 전 온 댓글을 놓칠 수 있다(11-04 실측) — 올릴 때마다 먼저 줍는다
-        print(f"0) ArtifactComments read: url={st['url']} — 열린 스레드의 [board …] 중 문서에 아직 없는 것을 board reply 로 먼저 넣고 resolve")
-    if st.get("url"):
-        print(f"1) Artifact publish: file_path={page}  url={st['url']}")
+    write(d / ".remote" / "row.json", json.dumps(row, ensure_ascii=False))
+    print(f"[push] {a.task} — 세션 아티팩트({s['session']})·목록 줄. 아래 순서대로 부르세요.")
+    if url:   # 막 만든 아티팩트는 연결이 붙기 전 온 댓글을 놓칠 수 있다(11-04 실측) — 올릴 때마다 먼저 줍는다
+        print(f"0) ArtifactComments read: url={url} — 열린 스레드의 [board …] 중 문서에 아직 없는 것을 board reply 로 먼저 넣고 resolve")
+        print(f"1) Artifact publish: file_path={page}  url={url}")
     else:
-        print(f'1) Artifact publish: file_path={page}  icon="checklist"  capabilities={{"comments": {{}}, "assets": {{}}}}  (첫 올리기 — 새 아티팩트)')
-        print(f"   → board pushed {a.task} --url <결과 주소>   (목록 줄에 링크를 넣는다)")
+        print(f'1) Artifact publish: file_path={page}  icon="checklist"  capabilities={{"comments": {{}}, "assets": {{}}}}  (이 세션의 첫 아티팩트)')
+        print(f"   → board pushed {a.task} --url <결과 주소>   (세션 아티팩트 주소 기록 + 목록 줄 링크)")
     v = st.get("version")
-    print(f"2) ArtifactData set: url={HUB}  collection=tasks  doc_id={row_id(a.task)}  file_path={out / 'row.json'}" + (f"  if_version={v}" if v else "  (처음 — if_version 없이)"))
+    print(f"2) ArtifactData set: url={HUB}  collection=tasks  doc_id={row_id(a.task)}  file_path={d / '.remote' / 'row.json'}" + (f"  if_version={v}" if v else "  (처음 — if_version 없이)"))
     print(f"3) board pushed {a.task} --version <결과 version>")
-    print("   버전이 안 맞아 거절되면 결과에 나온 현재 version 으로 2) 를 다시. 아티팩트가 없다고 나오면 board pushed --reset 뒤 다시 push.")
+    print("   버전이 안 맞아 거절되면 결과에 나온 현재 version 으로 2) 를 다시. 아티팩트가 없다고 나오면 board pushed <작업> --reset 뒤 다시 push.")
+
+
+def cmd_hubpage(a):
+    """목록 아티팩트 화면 — PC 화면과 같은 코드(web/index.html)를 목록 모드로. 데이터는 심지 않고 db tasks 를 실시간으로 읽는다.
+    화면 코드를 고쳤을 때만 다시 올린다(이 PC 의 목록 담당 세션이 BOARD_HUB 주소로 publish, capabilities={"db": {}})."""
+    page = (WEB / "index.html").read_text(encoding="utf-8")
+    page = page.replace("<script>\nconst $ =", "<script>window.BOARD = " + json.dumps({"mode": "hub", "hub": HUB}) + ";</script>\n<script>\nconst $ =", 1)
+    out = pathlib.Path(a.out).expanduser()
+    write(out, page)
+    print(out)
 
 
 def cmd_pushed(a):
     f, d = resolve(a.task)
     (d / ".remote").mkdir(exist_ok=True)
-    st = {} if a.reset else remote(d)
+    sess = summary(a.task)["session"]
+    st = remote(d)
+    if a.reset:
+        st.pop("version", None)
+        sess_state(sess, {"url": ""})
     if a.url:
-        st["url"] = a.url
-        rowf = pathlib.Path(st.get("row", d / ".remote" / "row.json"))
+        sess_state(sess, {"url": a.url})
+        rowf = d / ".remote" / "row.json"
         if rowf.is_file():
-            row = json.loads(rowf.read_text(encoding="utf-8")); row["url"] = a.url
+            row = json.loads(rowf.read_text(encoding="utf-8")); row["url"] = a.url + "#" + a.task
             write(rowf, json.dumps(row, ensure_ascii=False))
     if a.version:
         st["version"] = a.version
     if a.url or a.version:
         st["at"] = time.time()
     write(d / ".remote" / "state.json", json.dumps(st))
-    print(f"기록함: {a.task} {st}")
+    print(f"기록함: {a.task} {st} · 세션 {sess_state(sess)}")
 
 
 def cmd_reply(a):
@@ -777,6 +822,7 @@ def main(argv=None):
     pu = sub.add_parser("push", help="작업 아티팩트·목록 줄 내보낼 준비 + 부를 도구 호출 안내")
     pu.add_argument("task")
     pu.add_argument("--out", help="만들 파일을 둘 폴더(기본 <작업>/.remote) — Artifact 가 거절하면 세션 scratchpad 로")
+    sub.add_parser("hubpage", help="목록 아티팩트 화면 만들기(화면 코드 고쳤을 때만)").add_argument("out")
     pd = sub.add_parser("pushed", help="push 뒤 결과(아티팩트 주소·목록 줄 버전) 기록")
     pd.add_argument("task")
     pd.add_argument("--url")
@@ -795,7 +841,7 @@ def main(argv=None):
         return print(url(a.task))
     try:
         return {"new": cmd_new, "wait": cmd_wait, "done": cmd_done, "list": cmd_list, "orphans": cmd_orphans,
-                "push": cmd_push, "pushed": cmd_pushed, "reply": cmd_reply}[a.cmd](a)
+                "push": cmd_push, "pushed": cmd_pushed, "hubpage": cmd_hubpage, "reply": cmd_reply}[a.cmd](a)
     except KeyError as e:
         sys.exit(f"없는 작업: {e} — board list 로 확인")
 
