@@ -7,9 +7,9 @@
 - 2026-11-03 가로 탭 → 왼쪽 세션별 접히는 목록(작업마다 내 차례 질문 머리 미리보기) — 사용자 "눌러봐야 뭔지 아니까", 작업 17개가 되자 탭이 잘림. 접힘 상태는 localStorage.
 - 2026-11-03 데스크톱 알림 추가(사용자 Q3 선택): 내 차례가 새로 생기면 GNOME 알림, 누르면 그 작업 화면.
 - 2026-11-04 이름 Task Board(사용자). 화면·알림·문서에 보이는 이름만 — 명령어 `board`·스킬 이름은 그대로(떠 있는 세션이 다시 배울 일 없게).
-- 2026-11-04 바깥 화면(아티팩트) https://claude.ai/artifact/9pNMizUXpHJhzYjgMHv6TM — 중계 세션 = 이모저모 [848664].
-  `board snapshot` 이 web/index.html 에 진행 중 작업을 심어(window.BOARD) 같은 화면 코드로 그린다. 보내기 = 댓글 sendToClaude → 중계 세션이 `board reply`.
-  중계 절차는 skill/SKILL.md "바깥 화면(아티팩트)과 중계 세션". 중계 세션이 바뀌면 여기와 스킬을 고칠 것.
+- 2026-11-04 목록 아티팩트 https://claude.ai/artifact/9pNMizUXpHJhzYjgMHv6TM (db `tasks`, `web/hub.html` — 이모저모 [848664] 가 올림, 화면 코드 고칠 때만 다시 올린다).
+  이 PC 설정 `BOARD_HUB` 에 들어 있다. 작업 아티팩트는 각 세션이 `board push`(`page_for` = web/index.html 에 작업 하나를 심음 — `R.single`).
+  저장소 원격: github.com/glowElephant/task-board(개인 계정, 비공개 — 사용자 "회사계정 말고 개인계정, 히스토리 남으니까").
 - 기획·결정 이력: `~/rbq_ws/etc/decisions/board-tool.txt` (Q1~Q6 결정).
 
 ## 구조
