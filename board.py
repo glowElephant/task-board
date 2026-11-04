@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""board — 확인판. 여러 Claude 세션이 사용자에게 물을 것을 작업별 문서(탭 하나)로 모은다.
+"""board — Task Board(옛 이름 확인판). 여러 Claude 세션이 사용자에게 물을 것을 작업별 문서(탭 하나)로 모은다.
 
 파일이 원본이다: $BOARD_DIR/<작업>/task.md (+ img/). 서버는 그 파일을 보여 주고 사용자의 답·메모·이미지를
 그 자리에 고쳐 넣을 뿐 상태를 따로 갖지 않는다. 사용자가 [보내기]를 누르면 <작업>/.sent 가 바뀌고,
@@ -18,6 +18,7 @@ BOARD_EXTRA(옛 txt 문서 폴더, os.pathsep 로 여럿 — 탭으로 보여 �
 BOARD_NOTIFY(0 이면 PC 알림 끔) · BOARD_AWAY_MIN(입력 없이 몇 분이면 자리 비움, 기본 30).
 """
 import argparse
+import base64
 import datetime
 import http.server
 import json
@@ -25,6 +26,7 @@ import mimetypes
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -413,7 +415,7 @@ class Popups:
             import gi
             gi.require_version("Notify", "0.7")
             from gi.repository import GLib, Notify
-            Notify.init("확인판")
+            Notify.init("Task Board")
             self.N, self.G = Notify, GLib
             threading.Thread(target=GLib.MainLoop().run, daemon=True).start()
         except (ImportError, ValueError):
@@ -421,7 +423,7 @@ class Popups:
 
     def show(self, tid, head, body):
         if self.N is None:
-            subprocess.run(["notify-send", "-u", "critical", "-a", "확인판", head, body], check=False)
+            subprocess.run(["notify-send", "-u", "critical", "-a", "Task Board", head, body], check=False)
             return
 
         def go():
@@ -450,7 +452,7 @@ def _gdbus(dest, path, method):
 
 
 def presence():
-    """watching = 확인판 창을 보는 중 · desk = PC 앞(다른 일) · away = AWAY_MIN 분 넘게 키보드·마우스 입력 없음.
+    """watching = Task Board 창을 보는 중 · desk = PC 앞(다른 일) · away = AWAY_MIN 분 넘게 키보드·마우스 입력 없음.
     잠금은 따로 안 본다 — 잠그자마자 폰이 울리면 잠깐 자리 뜰 때도 울려서 30분 뒤부터로 했다(11-03 사용자).
     잠겨 있어도 유휴 시간은 계속 쌓인다. GNOME 이 아니면 유휴를 못 읽어 desk 로 본다."""
     t = time.time()
@@ -488,7 +490,7 @@ def notify_loop(interval=3):
         if new and presence()["state"] != "desk":   # 보고 있으면 화면 숫자로 충분, 자리 비움은 세션이 폰으로
             continue
         for tid, (title, sess, qs) in new.items():
-            who = re.sub(r"\s*\[[0-9a-f]+\]$", "", sess) or "확인판"
+            who = re.sub(r"\s*\[[0-9a-f]+\]$", "", sess) or "Task Board"
             popups.show(tid, f"내 차례 · {who}", "\n".join([title] + [q for q in qs if q]))
 
 
@@ -497,7 +499,7 @@ def serve():
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     if NOTIFY:
         threading.Thread(target=notify_loop, daemon=True).start()
-    print(f"확인판: http://localhost:{PORT}  (문서 {BOARD})", flush=True)
+    print(f"Task Board: http://localhost:{PORT}  (문서 {BOARD})", flush=True)
     srv.serve_forever()
 
 
@@ -567,7 +569,7 @@ def cmd_wait(a):
         due = away_due(dirs)
         if due:
             print("[자리 비움] 사용자가 자리를 비웠고 내 차례가 남아 있다 — PushNotification(status=proactive) 으로 아래 한 줄을 보내고 board wait 를 다시 건다.")
-            print("확인판 · " + " / ".join(f"{title[:40]}: 내 차례 {n}건" for title, n in due))
+            print("Task Board · " + " / ".join(f"{title[:40]}: 내 차례 {n}건" for title, n in due))
             return 4
         time.sleep(a.poll)
     print(f"{a.max}분 동안 [보내기] 없음 — board wait {' '.join(a.task)} 를 다시 건다.")
@@ -611,10 +613,86 @@ def cmd_orphans(a):
         if s.get("unread") and not s.get("listening"):
             found += 1
             print(f"{t}\t{s['session']}\t{s['title'][:60]}")
-            print(f"  SendMessage → {s['session']}: 확인판 {t} 에 사용자가 [보내기] 했는데 이 세션의 board wait 가 꺼져 있어 못 깼습니다."
+            print(f"  SendMessage → {s['session']}: Task Board {t} 에 사용자가 [보내기] 했는데 이 세션의 board wait 가 꺼져 있어 못 깼습니다."
                   f" `board wait {t}` 를 Bash run_in_background 로 다시 걸어 주세요 — 바로 끝나며 보낸 내용을 보여 줍니다.")
     if not found:
         print("안 읽힌 작업 없음")
+
+
+def cmd_snapshot(a):
+    """바깥(아티팩트)용 한 장 — 진행 중 작업을 화면 코드(web/index.html)에 심는다. 같은 코드라 PC 화면과 똑같이 보인다.
+    중계 세션이 이 파일을 Artifact 로 올린다. 이미지는 data: 로 넣는다(작업 폴더 img/ 의 3 MB 미만만)."""
+    ids = [t for t in all_ids() if not t.startswith("txt:") and summary(t)["status"] != "끝"]
+    tasks, details, images = [], {}, {}
+    for t in ids:
+        d = detail(t)
+        text = d.pop("raw")
+        tasks.append({k: v for k, v in d.items() if k != "blocks"})
+        details[t] = d
+        folder = resolve(t)[1]
+        for rel in set(re.findall(r"!\[[^\]]*\]\((img/[^)\s]+)\)", text)):
+            f = folder / rel
+            if f.is_file() and f.stat().st_size < 3_000_000:
+                mime = mimetypes.guess_type(f.name)[0] or "image/png"
+                images[f"{t}/{rel}"] = f"data:{mime};base64," + base64.b64encode(f.read_bytes()).decode()
+    data = json.dumps({"tasks": tasks, "details": details, "images": images, "at": time.time()}, ensure_ascii=False)
+    page = (WEB / "index.html").read_text(encoding="utf-8")
+    page = page.replace("<script>\nconst $ =", "<script>window.BOARD = " + data.replace("</", "<\\/") + ";</script>\n<script>\nconst $ =", 1)
+    out = pathlib.Path(a.out).expanduser()
+    write(out, page)
+    print(f"{out} — 작업 {len(ids)}개 · {len(page) // 1024} KB")
+
+
+def cmd_watch(a):
+    """중계용 — 진행 중 작업 문서가 바깥용 한 장(a.than)보다 새로워지면 끝난다(조용해질 때까지 a.quiet 초, 길어도 90초 모아서).
+    0 = 바뀜(snapshot 다시 만들어 올리고 다시 건다) · 3 = 시간 초과(다시 건다)."""
+    ref, first = pathlib.Path(a.than).expanduser(), None
+    deadline = time.time() + a.max * 60
+    while time.time() < deadline:
+        base = ref.stat().st_mtime if ref.exists() else 0
+        latest = max((p.stat().st_mtime for p in BOARD.glob("*/task.md")), default=0)
+        if latest > base:
+            first = first or time.time()
+            if time.time() - latest >= a.quiet or time.time() - first >= 90:
+                print(f"바뀜 — board snapshot {a.than} 로 다시 만들어 Artifact 로 올리고 board watch 를 다시 건다.")
+                return 0
+        time.sleep(a.poll)
+    print(f"{a.max}분 동안 바뀐 것 없음 — board watch 를 다시 건다.")
+    return 3
+
+
+def cmd_reply(a):
+    """바깥 화면의 [보내기]·[저장]을 파일에 써 넣는다(중계 세션이 댓글을 받아 부른다). 글 속 ![](로컬 파일) 은 작업 img/ 로 옮긴다.
+    담당 세션이 안 듣고 있으면 SendMessage 로 깨울 문구를 찍는다."""
+    f, d = resolve(a.task)
+    if d is None:
+        sys.exit("txt 문서는 안 됩니다")
+    answer = pathlib.Path(a.file).read_text(encoding="utf-8") if a.file else sys.stdin.read()
+
+    def move(m):
+        src = pathlib.Path(m.group(2)).expanduser()
+        if not src.is_absolute() or not src.is_file():
+            return m.group(0)
+        (d / "img").mkdir(exist_ok=True)
+        name = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f") + (src.suffix or ".png")
+        shutil.copyfile(src, d / "img" / name)
+        return f"![{m.group(1)}](img/{name})"
+    answer = re.sub(r"!\[([^\]]*)\]\(([^)\s]+)\)", move, answer)
+    text = f.read_text(encoding="utf-8")
+    new = add_answer(text, a.item, answer)
+    if new == text:
+        sys.exit("빈 답 — 아무것도 안 바꿨습니다")
+    write(f, new)
+    s = summary(a.task)
+    if not a.send:
+        return print(f"저장함: {a.task} {a.item}")
+    send(d, [a.item])
+    if a.task in listeners():
+        print(f"보냄: {a.task} {a.item} — {s['session']} 가 듣는 중이라 곧 깨어납니다.")
+    else:
+        print(f"보냄: {a.task} {a.item} — {s['session']} 가 안 듣는 중. SendMessage 로 깨운다:")
+        print(f"  Task Board {a.task} 에 사용자가 [보내기] 했는데 이 세션의 board wait 가 꺼져 있습니다."
+              f" `board wait {a.task}` 를 Bash run_in_background 로 다시 걸어 주세요 — 바로 끝나며 보낸 내용을 보여 줍니다.")
 
 
 def cmd_list(a):
@@ -624,7 +702,7 @@ def cmd_list(a):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="board", description="확인판 — 세션들이 사용자에게 물을 것을 작업별 탭으로")
+    p = argparse.ArgumentParser(prog="board", description="Task Board — 세션들이 사용자에게 물을 것을 작업별 탭으로")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("serve")
     n = sub.add_parser("new")
@@ -639,6 +717,18 @@ def main(argv=None):
     sub.add_parser("done").add_argument("task")
     sub.add_parser("list")
     sub.add_parser("orphans", help="보냈는데 듣는 세션이 없어 안 읽힌 작업과 깨울 메시지")
+    sn = sub.add_parser("snapshot", help="바깥(아티팩트)용 한 장 만들기")
+    sn.add_argument("out")
+    wt = sub.add_parser("watch", help="중계용 — 작업 문서가 바뀌면 끝남")
+    wt.add_argument("--than", required=True, help="board snapshot 이 만든 파일")
+    wt.add_argument("--quiet", type=float, default=20)
+    wt.add_argument("--max", type=float, default=110)
+    wt.add_argument("--poll", type=float, default=3)
+    rp = sub.add_parser("reply", help="바깥 화면에서 온 답을 문서에 넣기")
+    rp.add_argument("task")
+    rp.add_argument("item", help="Q1 같은 질문 id, 또는 메모")
+    rp.add_argument("--file", help="답 글 파일(없으면 표준 입력)")
+    rp.add_argument("--save", dest="send", action="store_false", help="보내지 않고 문서에만")
     sub.add_parser("url").add_argument("task", nargs="?", default="")
     a = p.parse_args(argv)
     if a.cmd == "serve":
@@ -646,7 +736,8 @@ def main(argv=None):
     if a.cmd == "url":
         return print(url(a.task))
     try:
-        return {"new": cmd_new, "wait": cmd_wait, "done": cmd_done, "list": cmd_list, "orphans": cmd_orphans}[a.cmd](a)
+        return {"new": cmd_new, "wait": cmd_wait, "done": cmd_done, "list": cmd_list, "orphans": cmd_orphans,
+                "snapshot": cmd_snapshot, "watch": cmd_watch, "reply": cmd_reply}[a.cmd](a)
     except KeyError as e:
         sys.exit(f"없는 작업: {e} — board list 로 확인")
 

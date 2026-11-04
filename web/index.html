@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>확인판</title>
+<title>Task Board</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
 <style>
@@ -133,7 +133,7 @@ details.reopen > summary { color: var(--muted); font-size: 13px; cursor: pointer
 <body>
 <div class="app">
   <aside aria-label="세션별 작업">
-    <div class="side-head"><span class="brand">확인판</span><span id="total"></span><span class="sub" id="sub"></span></div>
+    <div class="side-head"><span class="brand">Task Board</span><span id="total"></span><span class="sub" id="sub"></span></div>
     <div id="groups"></div>
     <button id="doneBtn" type="button">끝난 작업</button>
   </aside>
@@ -142,13 +142,38 @@ details.reopen > summary { color: var(--muted); font-size: 13px; cursor: pointer
 <script>
 const $ = (s, el = document) => el.querySelector(s);
 const h = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.flat().filter(k => k != null)); return e; };
-const dark = matchMedia('(prefers-color-scheme: dark)').matches && document.documentElement.dataset.theme !== 'light';
+const theme = document.documentElement.dataset.theme, dark = theme === 'dark' || (theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
 marked.setOptions({ breaks: true });   // 세션은 txt 처럼 줄 단위로 쓴다 — 줄바꿈을 그대로
 mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'neutral', securityLevel: 'loose' });
 
 let tasks = [], cur = null, view = 'task', drafts = {}, stale = false;
 
+// 바깥(아티팩트)에서 열린 경우 — board snapshot 이 window.BOARD 에 진행 중 작업을 심는다. 원본은 PC 파일 하나:
+// [보내기]·[저장]은 Claude 에게 보내기(댓글)로 중계 세션을 깨우고, 중계 세션이 파일에 써 넣은 뒤 이 페이지를 다시 올린다.
+const R = window.BOARD || null;
+let comments = null, assets = null;
+if (R && window.claude) { claude.use('comments').then(c => comments = c); claude.use('assets').then(a => assets = a); }
+const why = { no_session: '받을 세션이 없습니다 — PC 의 중계 세션이 꺼져 있습니다', writers_only: '편집 권한이 있어야 보낼 수 있습니다', off: '이 화면에선 보내기가 꺼져 있습니다' };
+async function relay(tid, item, text, send) {
+  if (!comments) throw new Error('이 화면에선 보낼 수 없습니다(댓글 권한)');
+  const can = await comments.canSendToClaude().catch(() => 'off');
+  if (can !== 'available') throw new Error(why[can] || can);
+  const anchor = await comments.anchorFor(document.getElementById('q-' + item) || $('#page'));
+  await comments.sendToClaude({ anchor, text: `[board ${send ? 'send' : 'save'}] ${tid} ${item}\n${text}` });
+  const d = R.details[tid];   // 다시 올라오기 전까지 내 말을 바로 보이게
+  const b = d && d.blocks.find(b => (b.type === 'item' && b.id === item) || (b.type === 'memo' && item === '메모'));
+  if (b) { b.entries.push({ who: 'me', text }); if (b.turn) b.turn = 'claude'; }
+  return d;
+}
+async function remoteApi(path, body) {
+  if (path === '/api/tasks') return R.tasks;
+  if (path.startsWith('/api/task?id=')) { const d = R.details[decodeURIComponent(path.slice(13))]; if (!d) throw new Error('없음'); return d; }
+  if (path === '/api/answer') return relay(body.id, body.item, body.text, !!body.send);
+  throw new Error('PC 에서만 됩니다');
+}
+
 async function api(path, body) {
+  if (R) return remoteApi(path, body);
   const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || r.status);
@@ -162,7 +187,7 @@ function md(text, tid) {
   box.innerHTML = marked.parse(text || '');
   box.querySelectorAll('img').forEach(img => {
     const src = img.getAttribute('src') || '';
-    if (!/^(https?:|data:|\/)/.test(src)) img.src = `/files/${encodeURIComponent(tid)}/${src}`;
+    if (!/^(https?:|data:|\/)/.test(src)) img.src = R ? (R.images[tid + '/' + src] || '') : `/files/${encodeURIComponent(tid)}/${src}`;
   });
   box.querySelectorAll('pre > code.language-mermaid').forEach(code => {
     const div = h('div', { className: 'mermaid', textContent: code.textContent });
@@ -221,7 +246,7 @@ function renderTabs() {
   const mine = tasks.filter(t => t.status !== '끝').reduce((n, t) => n + t.mine, 0);
   $('#total').replaceChildren(...(mine ? [h('span', { className: 'count', textContent: mine })] : []));
   $('#sub').textContent = `세션 ${groups().filter(g => g.key !== 'txt').length} · 작업 ${tasks.filter(t => t.status !== '끝').length}`;
-  document.title = mine ? `(${mine}) 확인판` : '확인판';
+  document.title = mine ? `(${mine}) Task Board` : 'Task Board';
 }
 function keepDrafts() { if (cur) store.set('board.drafts.' + cur.id, drafts); }
 function sorted() { return groups().flatMap(g => g.items); }
@@ -262,36 +287,48 @@ function saveRow(onSave, onSend, hint, msg) {
 
 function attachPaste(ta, tid) {
   const upload = async file => {
-    const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
-    const r = await fetch(`/api/image?id=${encodeURIComponent(tid)}&ext=${ext}`, { method: 'POST', body: file });
-    const j = await r.json();
-    const at = ta.selectionStart, snip = `![](${j.path})`;
+    let path;
+    if (R) { if (!assets) return alertRow(ta, '이 화면에선 이미지를 올릴 수 없습니다'); path = (await assets.upload(file)).url; }
+    else {
+      const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+      const r = await fetch(`/api/image?id=${encodeURIComponent(tid)}&ext=${ext}`, { method: 'POST', body: file });
+      path = (await r.json()).path;
+    }
+    const at = ta.selectionStart, snip = `![](${path})`;
     ta.value = ta.value.slice(0, at) + snip + ta.value.slice(ta.selectionEnd);
     ta.dispatchEvent(new Event('input'));
   };
   ta.addEventListener('paste', e => { const f = [...e.clipboardData.files].filter(f => f.type.startsWith('image/')); if (f.length) { e.preventDefault(); f.forEach(upload); } });
   ta.addEventListener('dragover', e => e.preventDefault());
   ta.addEventListener('drop', e => { const f = [...e.dataTransfer.files].filter(f => f.type.startsWith('image/')); if (f.length) { e.preventDefault(); f.forEach(upload); } });
+  return upload;
 }
+function alertRow(ta, msg) { const ok = ta.parentElement && ta.parentElement.querySelector('.ok'); if (ok) ok.textContent = msg; }
 
 const okMsg = {};
 function thumbs(text, tid) {
-  const paths = [...(text || '').matchAll(/!\[[^\]]*\]\((img\/[^)\s]+)\)/g)].map(m => m[1]);
-  return h('div', { className: 'thumbs' }, paths.map(p => h('img', { src: `/files/${encodeURIComponent(tid)}/${p}`, alt: '붙인 이미지' })));
+  const paths = [...(text || '').matchAll(/!\[[^\]]*\]\(((?:img\/|https?:)[^)\s]+)\)/g)].map(m => m[1]);
+  return h('div', { className: 'thumbs' }, paths.map(p => h('img', { src: /^https?:/.test(p) ? p : `/files/${encodeURIComponent(tid)}/${p}`, alt: '붙인 이미지' })));
 }
 function editor(key, value, tid, placeholder, onSave, onSend) {
   const ta = h('textarea', { value: drafts[key] ?? value, placeholder });
   const prev = tid ? thumbs(ta.value, tid) : h('div');
   ta.addEventListener('input', () => { drafts[key] = ta.value; keepDrafts(); if (tid) prev.replaceChildren(...thumbs(ta.value, tid).childNodes); });
-  if (tid) attachPaste(ta, tid);
+  const upload = tid ? attachPaste(ta, tid) : null;
   const stamp = () => new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
   const done = (fn, msg) => async () => { cur = await fn(ta.value); delete drafts[key]; keepDrafts(); okMsg[key] = `${msg} ${stamp()}`; await refreshList(); renderTask(); };
   const r = saveRow(done(onSave, '저장됨 — 대화에 올렸습니다'), onSend && done(onSend, '보냄 — 세션이 읽고 반영합니다'),
-    tid ? '저장 = 여기에만 · 보내기 = 세션이 읽고 반영 · 이미지 Ctrl+V · Ctrl+Enter 보내기' : '', okMsg[key]);
+    tid ? (R ? '저장 = 문서에만 · 보내기 = 세션이 읽고 반영' : '저장 = 여기에만 · 보내기 = 세션이 읽고 반영 · 이미지 Ctrl+V · Ctrl+Enter 보내기') : '', okMsg[key]);
   ta.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && r.send) { e.preventDefault(); r.send.click(); }
     if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); r.save.click(); }
   });
+  if (R && upload) {   // 폰엔 붙여넣기가 불편하다 — 사진 고르기
+    const pick = h('input', { type: 'file', accept: 'image/*', hidden: true });
+    pick.onchange = () => [...pick.files].forEach(upload);
+    r.row.insertBefore(h('button', { type: 'button', textContent: '사진', onclick: () => pick.click() }), r.save);
+    r.row.append(pick);
+  }
   return h('div', {}, ta, prev, r.row);
 }
 
@@ -322,14 +359,15 @@ function renderTask() {
       h('div', { className: 'meta' },
         h('span', { className: 'pill ' + (doneNow ? 'done' : t.mine ? 'me' : 'claude'), textContent: doneNow ? '끝' : t.mine ? `내 차례 ${t.mine}` : t.kind === 'txt' ? 'txt 문서' : '세션 차례' }),
         h('span', { textContent: t.session }), h('span', { textContent: when(t.mtime) + ' 갱신' }))),
-    h('div', { className: 'actions' }, ...(t.kind === 'task' ? [
+    h('div', { className: 'actions' }, ...(t.kind === 'task' && !R ? [
       h('button', { type: 'button', textContent: '원문 편집', onclick: () => renderRaw() }),
       h('button', { type: 'button', textContent: doneNow ? '다시 진행' : '끝으로', onclick: async () => { cur = await api('/api/status', { id: t.id, done: !doneNow }); await refreshList(); renderTask(); } }),
     ] : [])));
   const out = [head];
-  if (t.kind === 'task' && !doneNow && !t.listening)
+  if (R) out.push(h('div', { className: 'banner' }, h('span', { textContent: `바깥에서 보는 화면 — PC 내용을 ${when(R.at)} 에 맞췄습니다. 바뀌면 1분쯤 뒤 다시 맞춥니다.` })));
+  else if (t.kind === 'task' && !doneNow && !t.listening)
     out.push(h('div', { className: 'banner' }, h('span', { textContent: (t.unread ? '보낸 것이 아직 안 읽혔습니다 — ' : '') +
-      '이 세션은 지금 듣고 있지 않아 [보내기]해도 바로 깨어나지 않습니다(PC 메모리가 모자라면 세션의 대기가 꺼집니다). 그 세션 채팅에 "확인판 봐", 또는 아무 세션에 "확인판 깨워 줘"라고 해 주세요.' })));
+      '이 세션은 지금 듣고 있지 않아 [보내기]해도 바로 깨어나지 않습니다(PC 메모리가 모자라면 세션의 대기가 꺼집니다). 그 세션 채팅에 "Task Board 봐", 또는 아무 세션에 "Task Board 깨워 줘"라고 해 주세요.' })));
   if (t.kind === 'txt') {
     out.push(h('div', { className: 'banner' }, h('span', { textContent: '옛 txt 문서 — [보내기]가 없습니다. 저장한 뒤 그 세션에 "봐"라고 알려 주세요.' })));
     out.push(rawEditor(t));
@@ -338,7 +376,7 @@ function renderTask() {
       if (b.type === 'md') out.push(md(b.text, t.id));
       else if (b.type === 'item') out.push(itemCard(b, t.id));
       else if (b.type === 'memo') {
-        const card = h('section', { className: 'item' }, h('div', { className: 'head' }, h('span', { className: 'qt', textContent: '질문과 상관없는 말 · 이미지' })));
+        const card = h('section', { className: 'item', id: 'q-메모' }, h('div', { className: 'head' }, h('span', { className: 'qt', textContent: '질문과 상관없는 말 · 이미지' })));
         if (b.desc) card.append(h('div', { className: 'body' }, md(b.desc, t.id)));
         if (b.entries.length) card.append(thread(b.entries, t.id));
         card.append(h('div', { className: 'answer' }, editor('memo', '', t.id, '세션에게 하고 싶은 말 — 텍스트·이미지',
@@ -375,16 +413,17 @@ function renderDone() {
       : h('p', { className: 'empty', textContent: '아직 없습니다.' }));
 }
 $('#doneBtn').onclick = renderDone;
+if (R) $('#doneBtn').hidden = true;   // 바깥 화면엔 진행 중 작업만 싣는다
 
 (async () => {
   tasks = await api('/api/tasks');
   const want = decodeURIComponent(location.hash.slice(1));
   const first = tasks.find(t => t.id === want) || sorted()[0];
   if (first) await open(first.id); else { renderTabs(); $('#page').replaceChildren(h('p', { className: 'empty', textContent: '올라온 작업이 없습니다.' })); }
-  setInterval(refreshList, 2000);
+  if (!R) setInterval(refreshList, 2000);
 })();
 // 보는 중 신호 — 이 창이 보이고 포커스일 때만. 서버는 12초 안에 신호가 있으면 PC 알림을 안 띄운다
-function beat() { if (document.visibilityState === 'visible' && document.hasFocus()) fetch('/api/presence', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {}); }
+function beat() { if (R) return; if (document.visibilityState === 'visible' && document.hasFocus()) fetch('/api/presence', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {}); }
 setInterval(beat, 5000); addEventListener('focus', beat); document.addEventListener('visibilitychange', beat); beat();
 addEventListener('hashchange', () => { const id = decodeURIComponent(location.hash.slice(1)); if (id && (!cur || id !== cur.id)) open(id); });
 </script>

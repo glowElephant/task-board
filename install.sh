@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 확인판 설치 — board 명령 · 서버(사용자 서비스, 재부팅 후 자동) · board 스킬 · 전역 CLAUDE.md 규칙.
+# Task Board 설치 — board 명령 · 서버(사용자 서비스, 재부팅 후 자동) · board 스킬 · 전역 CLAUDE.md 규칙.
 # 여러 번 돌려도 결과가 같다. 설정은 ~/.config/board/env (처음 한 번만 만든다).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -18,7 +18,7 @@ unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/board.service"
 mkdir -p "$(dirname "$unit")"
 cat > "$unit" <<EOF
 [Unit]
-Description=board (확인판)
+Description=board (Task Board)
 
 [Service]
 ExecStart=/usr/bin/env python3 $here/board.py serve
@@ -44,4 +44,4 @@ open(md, "w", encoding="utf-8").write(s)
 PY
 
 sleep 1
-systemctl --user is-active --quiet board.service && echo "확인판 설치 완료 — $("$bin/board" url)" || { echo "서버가 안 떴습니다: journalctl --user -u board -n 20"; exit 1; }
+systemctl --user is-active --quiet board.service && echo "Task Board 설치 완료 — $("$bin/board" url)" || { echo "서버가 안 떴습니다: journalctl --user -u board -n 20"; exit 1; }
