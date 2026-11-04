@@ -640,22 +640,49 @@ def cmd_snapshot(a):
     page = page.replace("<script>\nconst $ =", "<script>window.BOARD = " + data.replace("</", "<\\/") + ";</script>\n<script>\nconst $ =", 1)
     out = pathlib.Path(a.out).expanduser()
     write(out, page)
+    write(pathlib.Path(str(out) + ".keys"), json.dumps(sorted(said())))   # board notice 가 이것과 비교한다
     print(f"{out} — 작업 {len(ids)}개 · {len(page) // 1024} KB")
 
 
-def cmd_answered(a):
-    """중계용 — 바깥 화면에서 보낸 질문(a.item)에 담당 세션이 ⇒ 로 답하면 끝난다. 0 = 답함(다시 올린다) · 3 = 시간 초과.
-    자동 갱신은 없고 이때만 올린다(11-04 사용자 "메세지 보내면 세션에서 받고 세션에서 메세지 보내면 갱신되고 그정도면")."""
+def said():
+    """세션이 사용자에게 한 말 — 새 질문(내 차례)과 ⇒ 답. 바깥 화면은 이게 새로 생길 때만 다시 올린다."""
+    keys = set()
+    for tid in all_ids():
+        if tid.startswith("txt:"):
+            continue
+        try:
+            meta, body = split(resolve(tid)[0].read_text(encoding="utf-8", errors="replace"))
+        except (KeyError, OSError):
+            continue
+        if meta.get("status", "") in DONE:
+            continue
+        for b in parse(body):
+            if b["type"] in ("item", "memo") and (b.get("turn") == "me" or (b["entries"] and b["entries"][-1]["who"] == "claude")):
+                keys.add(f"{tid}#{b.get('id', MEMO)}#{len(b['entries'])}")
+    return keys
+
+
+def cmd_notice(a):
+    """중계용 — 세션이 사용자에게 새로 말하면(새 질문·⇒ 답) 끝난다. 요약·설명만 고친 것은 안 센다.
+    0 = 새 말 있음(board snapshot → publish → 다시 건다) · 3 = 시간 초과(다시 건다).
+    11-04 사용자: 자동 갱신은 없어도 되지만 "세션에서 메세지 보내면 갱신" · 새 작업이 아티팩트에 안 올라가자 "왜 안올라가?"."""
+    ref, first = pathlib.Path(a.than + ".keys").expanduser(), None
     deadline = time.time() + a.max * 60
     while time.time() < deadline:
-        f, _ = resolve(a.task)
-        blocks = parse(split(f.read_text(encoding="utf-8", errors="replace"))[1])
-        b = next((b for b in blocks if (b["type"] == "item" and b["id"] == a.item) or (b["type"] == "memo" and a.item == MEMO)), None)
-        if b is None or (b["entries"] and b["entries"][-1]["who"] == "claude") or b.get("status") == "v":
-            print(f"{a.task} {a.item} 에 세션이 답함 — board snapshot 으로 다시 만들어 Artifact 로 올린다.")
-            return 0
+        try:
+            old = set(json.loads(ref.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            old = set()
+        new = said() - old
+        if new:
+            first = first or time.time()
+            if time.time() - first >= a.quiet:
+                print(f"세션이 새로 말함 {len(new)}건 — board snapshot {a.than} → Artifact publish → board notice 다시 건다.")
+                return 0
+        else:
+            first = None
         time.sleep(a.poll)
-    print(f"{a.max}분 동안 {a.task} {a.item} 에 답 없음 — 다시 걸거나 그만둔다([최신으로] 가 있다).")
+    print(f"{a.max}분 동안 새 말 없음 — board notice 를 다시 건다.")
     return 3
 
 
@@ -717,11 +744,11 @@ def main(argv=None):
     sub.add_parser("orphans", help="보냈는데 듣는 세션이 없어 안 읽힌 작업과 깨울 메시지")
     sn = sub.add_parser("snapshot", help="바깥(아티팩트)용 한 장 만들기")
     sn.add_argument("out")
-    an = sub.add_parser("answered", help="중계용 — 바깥에서 보낸 질문에 세션이 답하면 끝남")
-    an.add_argument("task")
-    an.add_argument("item")
-    an.add_argument("--max", type=float, default=110)
-    an.add_argument("--poll", type=float, default=3)
+    nt = sub.add_parser("notice", help="중계용 — 세션이 사용자에게 새로 말하면 끝남")
+    nt.add_argument("--than", required=True, help="board snapshot 이 만든 파일")
+    nt.add_argument("--quiet", type=float, default=5)
+    nt.add_argument("--max", type=float, default=110)
+    nt.add_argument("--poll", type=float, default=3)
     rp = sub.add_parser("reply", help="바깥 화면에서 온 답을 문서에 넣기")
     rp.add_argument("task")
     rp.add_argument("item", help="Q1 같은 질문 id, 또는 메모")
@@ -735,7 +762,7 @@ def main(argv=None):
         return print(url(a.task))
     try:
         return {"new": cmd_new, "wait": cmd_wait, "done": cmd_done, "list": cmd_list, "orphans": cmd_orphans,
-                "snapshot": cmd_snapshot, "reply": cmd_reply, "answered": cmd_answered}[a.cmd](a)
+                "snapshot": cmd_snapshot, "reply": cmd_reply, "notice": cmd_notice}[a.cmd](a)
     except KeyError as e:
         sys.exit(f"없는 작업: {e} — board list 로 확인")
 
