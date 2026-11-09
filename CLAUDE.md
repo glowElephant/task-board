@@ -53,6 +53,8 @@ board list; board url <작업>
   `initialize` 에 protocolVersion `2025-06-18` 로 답한다 — `server/discover`(2026-07-28 신식)에 답하면 채널을 안 본다. -32601 이면 옛 방식으로 내려온다.
   채널은 `--dangerously-load-development-channels server:board` 로 띄워야만 켜진다(설정·환경변수 없음), 띄울 때마다 경고 창 한 번, `-p` 에선 꺼진다(화면 없는 세션 불가).
   Orca 는 자기 `claude` 함수가 `command claude` 를 부르니 별칭이 안 먹는다 → PATH 래퍼. `~/.local/bin/claude` 는 자동 업데이트가 갈아 끼워서 못 고친다.
+  아티팩트 답(`board reply`)을 담당 세션(문서 `sid` = 부른 세션)이 부르면 읽음까지 한다 — 안 하면 채널(전에는 board wait)이 같은 답으로 한 번 더 깨워 `⇒` 가 두 번 달린다.
+  판정은 sid 만(이름은 겹친다 — 남이 읽음 처리하면 담당이 못 깬다). PC 화면에서 보낸 게 아직 안 갔으면 읽음 처리하지 않는다(그것까지 삼킨다).
   쓰지 않은 것: Claude Code 내부 메시지 소켓(`CLAUDE_CODE_MESSAGING_SOCKET`) — 문서에 없는 내부용. 세션 쪽 asyncRewake 훅 — 결국 세션마다 대기가 남는다.
 - "내 차례" = 질문의 마지막 말이 세션(`⇒`)이거나 말이 없음. 상태 필드를 따로 두지 않아 사람이 gedit 로 고쳐도 맞다.
 - 127.0.0.1 만 연다 — 로그인이 없으니 밖으로 열지 않는다. 폰에서 보기는 비밀번호와 함께 따로(2단계).

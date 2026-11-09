@@ -1081,8 +1081,9 @@ def cmd_pushed(a):
 
 
 def cmd_reply(a):
-    """바깥 화면의 [보내기]·[저장]을 파일에 써 넣는다(중계 세션이 댓글을 받아 부른다). 글 속 ![](로컬 파일) 은 작업 img/ 로 옮긴다.
-    담당 세션이 안 듣고 있으면 SendMessage 로 깨울 문구를 찍는다."""
+    """바깥 화면(아티팩트)의 [보내기]·[저장]을 파일에 써 넣는다(댓글을 받은 세션이 부른다). 글 속 ![](로컬 파일) 은 작업 img/ 로 옮긴다.
+    부른 세션이 그 작업 담당(sid 같음)이면 이미 받은 것이라 읽음까지 한다 — 안 하면 채널·board wait 가 같은 답으로 또 깨운다.
+    담당이 아닌데 담당 세션이 안 듣고 있으면 SendMessage 로 깨울 문구를 찍는다."""
     f, d = resolve(a.task)
     if d is None:
         sys.exit("txt 문서는 안 됩니다")
@@ -1102,10 +1103,15 @@ def cmd_reply(a):
     if new == text:
         sys.exit("빈 답 — 아무것도 안 바꿨습니다")
     write(f, new)
-    s = summary(a.task)
     if not a.send:
         return print(f"저장함: {a.task} {a.item}")
+    sid = split(new)[0].get("sid", "")
+    pending = unread(d)   # PC 화면에서 보낸 게 아직 안 갔으면 읽음 처리하지 않는다 — 그것까지 삼키면 안 된다
     send(d, [a.item])
+    if sid and sid == os.environ.get("CLAUDE_CODE_SESSION_ID") and not pending:
+        (d / ".seen").write_text(now(), encoding="utf-8")
+        return print(f"보냄: {a.task} {a.item} — 이 세션이 받은 답이라 다시 깨우지 않는다. task.md 를 다시 Read 하고 ⇒ 로 반영한다.")
+    s = summary(a.task)
     if s["listening"]:
         print(f"보냄: {a.task} {a.item} — {s['session']} 가 듣는 중(채널 또는 board wait)이라 곧 깨어납니다.")
     else:

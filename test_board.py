@@ -86,4 +86,13 @@ away = {"state": "away", "away_since": 100}
 board.deliver(away)
 board.deliver(away)
 assert q.qsize() == 1 and "내 차례 1건" in q.get()["params"]["content"]
+
+# reply: 담당 세션이 부르면 읽음까지(같은 답으로 또 안 깨움), 남이 부르거나 PC 에서 보낸 게 밀려 있으면 그대로 보낸다
+import argparse as _a, os as _os
+_ans = board.BOARD / "ans.txt"; _ans.write_text("아티팩트에서 온 답")
+_reply = lambda: board.cmd_reply(_a.Namespace(task="t", item="Q1", file=str(_ans), send=True))
+_os.environ["CLAUDE_CODE_SESSION_ID"] = "s1"; _reply(); assert not board.unread(board.BOARD / "t")
+_t.sleep(0.02); board.send(board.BOARD / "t", ["Q1"]); _reply(); assert board.unread(board.BOARD / "t")   # 밀린 [보내기]는 삼키지 않는다(파일 시각 단위 때문에 잠깐 띄움)
+_t.sleep(0.02); (board.BOARD / "t" / ".seen").write_text("x"); _t.sleep(0.02)
+_os.environ["CLAUDE_CODE_SESSION_ID"] = "남"; _reply(); assert board.unread(board.BOARD / "t")
 print("ok")
