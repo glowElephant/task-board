@@ -3,12 +3,13 @@
 
 파일이 원본이다: $BOARD_DIR/<작업>/task.md (+ img/). 서버는 그 파일을 보여 주고 사용자의 답·메모·이미지를
 그 자리에 고쳐 넣을 뿐 상태를 따로 갖지 않는다. 사용자가 [보내기]를 누르면 <작업>/.sent 가 바뀌고,
-그 작업을 `board wait` 로 기다리던 세션이 깨어난다.
+서버가 그 작업 세션에 채널(이 서버의 /mcp)로 바로 넣는다. 채널 없이 띄운 세션은 `board wait` 로 기다린다.
 
-  board serve                               화면 서버 (127.0.0.1:BOARD_PORT)
-  board new <작업> --title T --session S    작업 문서 만들기
-  board wait <작업>... [--max 분]           [보내기]까지 대기 — 세션은 Bash run_in_background 로 건다
+  board serve                               화면 서버 (127.0.0.1:BOARD_PORT) + 채널 MCP(/mcp)
+  board new <작업> --title T --session S    작업 문서 만들기 — 마지막 줄이 board wait 를 걸지 말지 알려 준다
+  board wait <작업>... [--max 분]           (채널 없는 세션만) [보내기]까지 대기 — Bash run_in_background 로 건다
                                             exit 0 = 보냄(읽고 반영) · 3 = 시간 초과(다시 건다) · 4 = 사용자 자리 비움(폰 푸시 후 다시 건다)
+                                            · 5 = 이 세션은 채널이 있어 안 기다림(다시 걸지 않는다)
   board done <작업>                         끝으로 표시 (목록 '끝난 작업' 으로)
   board list                                작업 목록
   board url [<작업>]                        화면 주소
@@ -25,6 +26,7 @@ import json
 import mimetypes
 import os
 import pathlib
+import queue
 import re
 import shutil
 import socket
@@ -278,7 +280,7 @@ def summary(tid):
             "status": "끝" if meta.get("status", "") in DONE else "진행 중",
             "mine": sum(i["turn"] == "me" for i in items), "waiting": sum(i["turn"] == "claude" for i in items),
             "asks": [f"{i['id']}. {i['title']}" for i in items if i["turn"] == "me"],
-            "listening": tid in listeners(), "unread": unread(d), "unpushed": unpushed(tid), "mtime": f.stat().st_mtime}
+            "listening": tid in listeners() or bool(chan_targets(meta)), "unread": unread(d), "unpushed": unpushed(tid), "mtime": f.stat().st_mtime}
 
 
 def all_ids():
@@ -306,25 +308,251 @@ def send(d, items):
     (d / ".sent").write_text(json.dumps({"at": now(), "items": items}, ensure_ascii=False), encoding="utf-8")
 
 
+# ── 채널: [보내기]를 세션에 바로 넣는다 ──────────────────────────────────────
+# 세션은 이 서버의 /mcp(HTTP MCP, 이름 board)에 붙고, `--dangerously-load-development-channels server:board` 로 띄운
+# 세션만 Claude Code 가 받아 깨어난다. 세션마다 프로세스를 띄우지 않는다 — 이 서버 하나가 모든 연결을 맡는다.
+CHAN = "board"
+CHAN_HELP = ('Task Board 에서 사용자가 [보내기]를 누르면 <channel source="board" task="<작업>"> 로 그 작업의 답·메모가 온다. '
+             "사용자가 직접 보낸 것이니 채팅 답과 같이 다룬다 — 본문 끝 안내대로 task.md 를 다시 읽고 반영한다. "
+             "이 세션은 board wait 를 걸지 않는다.")
+IN_SERVER = False
+_chans = {}            # MCP 세션 id → {"pid": Claude 프로세스, "q": 열린 스트림의 큐 또는 None}
+_chans_lock = threading.Lock()
+_cinfo = {"at": 0.0, "v": ([], {})}
+
+
+def _proc(pid, name):
+    return pathlib.Path(f"/proc/{pid}/{name}").read_bytes()
+
+
+def claude_session(pid):
+    """Claude Code 가 <설정 폴더>/sessions/<pid>.json 에 적는 세션 정보(sessionId·name). 아니면 None."""
+    try:
+        env = dict(x.split("=", 1) for x in _proc(pid, "environ").decode(errors="replace").split("\0") if "=" in x)
+        cfg = pathlib.Path(env.get("CLAUDE_CONFIG_DIR") or HOME / ".claude")
+        return json.loads((cfg / "sessions" / f"{pid}.json").read_text(encoding="utf-8")) | {"_dir": str(cfg)}
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def claude_pid(pid=None):
+    """이 프로세스를 띄운 Claude 세션의 pid — 부모를 거슬러 올라가 세션 파일이 있는 곳."""
+    pid = pid or os.getppid()
+    for _ in range(8):
+        if pid <= 1:
+            return None
+        if claude_session(pid):
+            return pid
+        try:
+            pid = int(_proc(pid, "stat").decode().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            return None
+    return None
+
+
+def chan_on(pid):
+    """채널을 켜고 띄운 세션인가 — 플래그 없이 붙은 연결에 넣으면 Claude Code 가 조용히 버린다."""
+    try:
+        return f"server:{CHAN}".encode() in _proc(pid, "cmdline").split(b"\0")
+    except OSError:
+        return False
+
+
+def chan_info():
+    """([(MCP 세션 id, pid, 세션 정보)] 넣을 수 있는 연결, {세션 이름: 살아 있는 수}). 2초 캐시."""
+    if time.time() - _cinfo["at"] < 2:
+        return _cinfo["v"]
+    if IN_SERVER:
+        with _chans_lock:
+            conns = [(m, c["pid"]) for m, c in _chans.items() if c["q"] is not None]
+    else:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/channels", timeout=2) as r:
+                conns = [tuple(x) for x in json.load(r)]
+        except (OSError, ValueError):
+            conns = []
+    live = [(m, p, s) for m, p in conns if chan_on(p) and (s := claude_session(p))]
+    names = {}
+    for sd in {pathlib.Path(s["_dir"]) for _, _, s in live} | {HOME / ".claude"}:
+        for f in (sd / "sessions").glob("*.json"):
+            if pathlib.Path(f"/proc/{f.stem}").exists():
+                try:
+                    n = json.loads(f.read_text(encoding="utf-8")).get("name", "")
+                except (OSError, ValueError):
+                    continue
+                names[n] = names.get(n, 0) + 1
+    _cinfo.update(at=time.time(), v=(live, names))
+    return live, names
+
+
+def chan_targets(meta):
+    """이 작업을 받을 연결 — 문서의 sid 와 같은 세션, 없으면 이름이 하나뿐인 세션(같은 이름이 여럿이면 안 보낸다: 잘못 가느니 안 간다)."""
+    live, names = chan_info()
+    sid = meta.get("sid", "")
+    hit = [m for m, _, s in live if sid and s.get("sessionId") == sid]
+    name = re.sub(r"\s*\[[0-9a-f]+\]\s*$", "", meta.get("session", ""))
+    if not hit and name and names.get(name) == 1:
+        hit = [m for m, _, s in live if s.get("name") == name]
+    return hit
+
+
+def chan_here():
+    """이 명령을 부른 세션이 채널로 [보내기]를 바로 받는가."""
+    pid = claude_pid()
+    return bool(pid) and any(p == pid for _, p, _ in chan_info()[0])
+
+
+def wait_hint(tids):
+    if chan_here():
+        return "이 세션은 채널로 연결돼 있어 [보내기]가 바로 들어온다 — board wait 는 걸지 않는다."
+    return f"이 세션은 채널이 없다 — board wait {' '.join(tids)} 를 Bash run_in_background 로 건다(채널을 켜고 다시 띄우면 필요 없다)."
+
+
+def claim(f):
+    """문서에 이 세션 id 를 적는다 — 채널이 이름 대신 id 로 세션을 찾게(이름은 겹치고 바뀐다)."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    text = f.read_text(encoding="utf-8")
+    if sid and split(text)[0].get("sid") != sid:
+        write(f, set_meta(text, "sid", sid))
+
+
+def _chan_put(hits, tid, content):
+    msg = {"jsonrpc": "2.0", "method": "notifications/claude/channel", "params": {"content": content, "meta": {"task": tid}}}
+    sent = 0
+    with _chans_lock:
+        for m in hits:
+            if _chans.get(m, {}).get("q") is not None:
+                _chans[m]["q"].put(msg)
+                sent += 1
+    return sent
+
+
+def deliver(away=None):
+    """안 읽힌 [보내기]를 그 작업 세션에 넣고 읽음 처리. 채널이 없는 세션 것은 그대로 둔다(board wait 가 받는다).
+    away(자리 비움일 때의 presence)를 주면 폰 알림 할 일도 넣는다 — 채널 세션엔 board wait exit 4 가 없어서."""
+    for tid in all_ids():
+        if tid.startswith("txt:"):
+            continue
+        try:
+            f, d = resolve(tid)
+            new = unread(d)
+            if not new and not away:
+                continue
+            hits = chan_targets(split(f.read_text(encoding="utf-8", errors="replace"))[0])
+            if not hits:
+                continue
+            if new and (sent := _chan_put(hits, tid, report_text(tid, d, channel=True))):
+                (d / ".seen").write_text(now(), encoding="utf-8")
+                print(f"[채널] {tid} → {sent}곳", flush=True)
+            if away and (due := away_due({tid: d}, away)):
+                _chan_put(hits, tid, "[자리 비움] 사용자가 자리를 비웠고 이 작업에 내 차례가 남아 있다 — "
+                          "PushNotification(status=proactive) 으로 아래 한 줄을 그대로 보낸다. board wait 는 걸지 않는다.\n"
+                          f"Task Board · {due[0][0][:40]}: 내 차례 {due[0][1]}건")
+                print(f"[채널] {tid} 자리 비움 알림", flush=True)
+        except (KeyError, OSError, ValueError) as e:
+            print(f"[채널] {tid}: {e}", flush=True)
+
+
+def chan_loop(interval=1.5, away_every=20):
+    n = 0
+    while True:
+        time.sleep(interval)
+        n += 1
+        try:
+            p = presence() if n % away_every == 0 else None   # 자리 비움은 분 단위라 30초마다면 된다(gdbus 를 덜 부른다)
+            deliver(p if p and p["state"] == "away" else None)
+            with _chans_lock:
+                for m in [m for m, c in _chans.items() if c["q"] is None and not pathlib.Path(f"/proc/{c['pid']}").exists()]:
+                    del _chans[m]
+        except Exception as e:   # 이 줄이 죽으면 [보내기]가 다시 아무에게도 안 간다
+            print(f"[채널] {e!r}", flush=True)
+
+
 # ── 서버 ─────────────────────────────────────────────────────────────────────
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def reply(self, body, ctype="application/json; charset=utf-8", code=200):
+    def reply(self, body, ctype="application/json; charset=utf-8", code=200, headers=None):
         data = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
+
+    def mcp_post(self, raw):
+        """board MCP — 도구 없이 채널만. 처음 붙을 때 Claude Code 가 X-Board-Pid(board channel-headers)로 자기 pid 를 알린다."""
+        msg = json.loads(raw or b"{}")
+        if not isinstance(msg, dict) or msg.get("id") is None:      # 알림·응답·묶음은 받기만
+            return self.reply(b"", code=202)
+        m, mid, hdr = msg.get("method"), msg["id"], {}
+        if m == "initialize":
+            sid = os.urandom(16).hex()
+            try:
+                pid = int(self.headers.get("X-Board-Pid") or 0)
+            except ValueError:
+                pid = 0
+            with _chans_lock:
+                _chans[sid] = {"pid": pid, "q": None}
+            hdr["Mcp-Session-Id"] = sid
+            # 2026-07-28 판(modern)은 서버가 먼저 보낼 길이 없어 Claude Code 가 채널을 안 붙인다 — 그 전 판으로 답한다
+            out = {"protocolVersion": "2025-06-18", "capabilities": {"experimental": {"claude/channel": {}}},
+                   "serverInfo": {"name": CHAN, "version": "1"}, "instructions": CHAN_HELP}
+            out = {"jsonrpc": "2.0", "id": mid, "result": out}
+        elif m == "ping":
+            out = {"jsonrpc": "2.0", "id": mid, "result": {}}
+        else:
+            out = {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"없는 메서드: {m}"}}
+        self.reply(out, headers=hdr)
+
+    def mcp_stream(self):
+        """서버 → 세션 스트림(SSE). 연결마다 스레드 하나가 큐를 기다린다 — 세션 쪽 프로세스는 없다."""
+        sid = self.headers.get("Mcp-Session-Id", "")
+        with _chans_lock:
+            c = _chans.get(sid)
+            if c is not None:
+                q = c["q"] = queue.Queue()
+        if c is None:
+            return self.reply({"error": "없는 MCP 세션 — 다시 initialize"}, code=404)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        try:
+            self.wfile.write(b": ok\n\n")
+            while True:
+                self.wfile.flush()
+                try:
+                    ev = q.get(timeout=25)
+                    self.wfile.write(b"event: message\ndata: " + json.dumps(ev, ensure_ascii=False).encode() + b"\n\n")
+                except queue.Empty:
+                    self.wfile.write(b": ping\n\n")
+        except OSError:
+            pass
+        finally:
+            with _chans_lock:
+                if _chans.get(sid, {}).get("q") is q:
+                    _chans[sid]["q"] = None
+
+    def do_DELETE(self):
+        with _chans_lock:
+            _chans.pop(self.headers.get("Mcp-Session-Id", ""), None)
+        self.reply(b"", code=200)
 
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
         q = dict(urllib.parse.parse_qsl(u.query))
         try:
+            if u.path == "/mcp":
+                return self.mcp_stream()
+            if u.path == "/api/channels":
+                with _chans_lock:
+                    return self.reply([[m, c["pid"]] for m, c in _chans.items() if c["q"] is not None])
             if u.path in ("/", "/index.html"):
                 return self.reply((WEB / "index.html").read_bytes(), "text/html; charset=utf-8")
             if u.path == "/api/presence":
@@ -348,6 +576,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         q = dict(urllib.parse.parse_qsl(u.query))
         raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
         try:
+            if u.path == "/mcp":
+                return self.mcp_post(raw)
             if u.path == "/api/presence":
                 _seen["beat"] = time.time()
                 _seen["at"] = 0.0
@@ -498,8 +728,11 @@ def notify_loop(interval=3):
 
 
 def serve():
+    global IN_SERVER
+    IN_SERVER = True
     BOARD.mkdir(parents=True, exist_ok=True)
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    threading.Thread(target=chan_loop, daemon=True).start()
     if NOTIFY:
         threading.Thread(target=notify_loop, daemon=True).start()
     print(f"Task Board: http://localhost:{PORT}  (문서 {BOARD})", flush=True)
@@ -536,20 +769,27 @@ def cmd_new(a):
         sys.exit(f"이미 있습니다: {d / 'task.md'}")
     d.mkdir(parents=True, exist_ok=True)
     write(d / "task.md", TEMPLATE.format(title=a.title, session=a.session, summary=a.summary or ""))
-    print(f"{d / 'task.md'}\n{url(a.task)}")
+    claim(d / "task.md")
+    print(f"{d / 'task.md'}\n{url(a.task)}\n{wait_hint([a.task])}")
 
 
-def report(tid, d):
+def report_text(tid, d, channel=False):
     info = json.loads((d / ".sent").read_text(encoding="utf-8"))
-    print(f"[보냄 {info.get('at', '')}] {tid} — {d / 'task.md'}")
+    out = [f"[보냄 {info.get('at', '')}] {tid} — {d / 'task.md'}"]
     blocks = parse(split((d / "task.md").read_text(encoding="utf-8"))[1])
     for b in blocks:
         if b["type"] == "item" and b["turn"] == "claude":
-            print(f"  {b['id']}. {b['title']}\n    -> " + b["entries"][-1]["text"].replace("\n", "\n    -> "))
+            out.append(f"  {b['id']}. {b['title']}\n    -> " + b["entries"][-1]["text"].replace("\n", "\n    -> "))
         if b["type"] == "memo" and MEMO in info.get("items", []) and b["entries"] and b["entries"][-1]["who"] == "me":
-            print("  메모:\n    -> " + b["entries"][-1]["text"].replace("\n", "\n    -> "))
+            out.append("  메모:\n    -> " + b["entries"][-1]["text"].replace("\n", "\n    -> "))
     push = HUB and not local_only(d / "task.md")
-    print("→ task.md 를 다시 읽고 질문마다 ⇒ 로 반영(결정된 건 [v]) 한 뒤" + (f" board push {tid} 로 아티팩트에도 올리고," if push else "") + " board wait 를 다시 건다.")
+    out.append("→ task.md 를 다시 읽고 질문마다 ⇒ 로 반영(결정된 건 [v]) 한 뒤" + (f" board push {tid} 로 아티팩트에도 올린다." if push else " 끝.")
+               + (" 채널로 받았으니 board wait 는 걸지 않는다." if channel else " 그리고 board wait 를 다시 건다."))
+    return "\n".join(out)
+
+
+def report(tid, d):
+    print(report_text(tid, d))
 
 
 def cmd_wait(a):
@@ -559,6 +799,10 @@ def cmd_wait(a):
         if d is None:
             sys.exit(f"txt 문서는 기다릴 수 없습니다: {t}")
         dirs[t] = d
+        claim(d / "task.md")
+    if chan_here():
+        print(wait_hint(a.task) + " 안 읽은 [보내기]가 있으면 곧 채널로 들어온다.")
+        return 5
     deadline = time.time() + a.max * 60
     while time.time() < deadline:
         ready = []
@@ -580,13 +824,15 @@ def cmd_wait(a):
     return 3
 
 
-def away_due(dirs):
-    """자리 비움 동안 작업마다 한 번(내 차례가 늘면 다시) 폰으로 알릴 것. 서버가 꺼져 있으면 알리지 않는다."""
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/presence", timeout=2) as r:
-            p = json.load(r)
-    except (OSError, ValueError):
-        return []
+def away_due(dirs, p=None):
+    """자리 비움 동안 작업마다 한 번(내 차례가 늘면 다시) 폰으로 알릴 것. 서버가 꺼져 있으면 알리지 않는다.
+    p = presence() 결과(서버 안에서 부를 때), 없으면 서버에 묻는다."""
+    if p is None:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/presence", timeout=2) as r:
+                p = json.load(r)
+        except (OSError, ValueError):
+            return []
     if p.get("state") != "away":
         return []
     due = []
@@ -715,6 +961,7 @@ def cmd_push(a):
         sys.exit("txt 문서는 안 됩니다")
     if local_only(f):
         sys.exit(f"{a.task} 는 로컬 전용(local: yes)이라 아티팩트로 안 보냅니다.")
+    claim(f)
     s = summary(a.task)
     if not s["session"]:
         sys.exit("문서 머리에 session: 이 없습니다 — '이름 [ref]' 를 넣고 다시")
@@ -741,6 +988,7 @@ def cmd_push(a):
     print(f"2) ArtifactData set: url={HUB}  collection=tasks  doc_id={row_id(a.task)}  file_path={d / '.remote' / 'row.json'}" + (f"  if_version={v}" if v else "  (처음 — if_version 없이)"))
     print(f"3) board pushed {a.task} --version <결과 version>")
     print("   버전이 안 맞아 거절되면 결과에 나온 현재 version 으로 2) 를 다시. 아티팩트가 없다고 나오면 board pushed <작업> --reset 뒤 다시 push.")
+    print(wait_hint([a.task]))
 
 
 def _set_cfg(key, val):
@@ -782,6 +1030,14 @@ def cmd_setup(a):
         print(f"PC 화면: http://localhost:{PORT}  (사용자 서비스 board)")
     elif not a.no_server:
         print(f"PC 화면은 수동 — `python3 {here / 'board.py'} serve` (리눅스가 아니면 자리 비움·PC 알림은 아직 안 됨). 아티팩트는 그대로 쓴다.")
+    if shutil.which("claude") and sys.platform.startswith("linux"):   # 채널은 /proc 로 세션을 찾는다 — 리눅스만
+        spec = {"type": "http", "url": f"http://127.0.0.1:{PORT}/mcp", "headersHelper": f"{link} channel-headers"}
+        subprocess.run(["claude", "mcp", "remove", CHAN, "-s", "user"], capture_output=True)
+        r = subprocess.run(["claude", "mcp", "add-json", CHAN, json.dumps(spec), "-s", "user"], capture_output=True, text=True)
+        print(f"채널 MCP '{CHAN}' 등록" + (" 함" if r.returncode == 0 else f" 실패: {(r.stderr or r.stdout).strip()[:200]}"))
+        print(f"  세션을 `claude --dangerously-load-development-channels server:{CHAN}` 로 띄우면 [보내기]가 바로 들어온다(board wait 불필요).")
+        print(f"  매번 붙이기 싫으면 래퍼를 PATH 맨 앞에(대화형 실행에만 붙인다, -p·하위 명령은 그대로) — ~/.bashrc 와 ~/.profile 끝에:\n"
+              f'    [ -x "{here / "bin" / "claude"}" ] && PATH="{here / "bin"}:$PATH"')
     hub = a.hub or _config().get("BOARD_HUB", "")
     if not hub:
         page = cfgf.parent / "hub.html"
@@ -850,12 +1106,17 @@ def cmd_reply(a):
     if not a.send:
         return print(f"저장함: {a.task} {a.item}")
     send(d, [a.item])
-    if a.task in listeners():
-        print(f"보냄: {a.task} {a.item} — {s['session']} 가 듣는 중이라 곧 깨어납니다.")
+    if s["listening"]:
+        print(f"보냄: {a.task} {a.item} — {s['session']} 가 듣는 중(채널 또는 board wait)이라 곧 깨어납니다.")
     else:
         print(f"보냄: {a.task} {a.item} — {s['session']} 가 안 듣는 중. SendMessage 로 깨운다:")
         print(f"  Task Board {a.task} 에 사용자가 [보내기] 했는데 이 세션의 board wait 가 꺼져 있습니다."
               f" `board wait {a.task}` 를 Bash run_in_background 로 다시 걸어 주세요 — 바로 끝나며 보낸 내용을 보여 줍니다.")
+
+
+def cmd_channel_headers(a):
+    """Claude Code 가 board MCP 에 붙을 때 부른다(headersHelper) — 이 세션의 Claude pid 를 머리글로 알린다."""
+    print(json.dumps({"X-Board-Pid": str(claude_pid() or 0)}))
 
 
 def cmd_list(a):
@@ -899,6 +1160,7 @@ def main(argv=None):
     rp.add_argument("--file", help="답 글 파일(없으면 표준 입력)")
     rp.add_argument("--save", dest="send", action="store_false", help="보내지 않고 문서에만")
     sub.add_parser("url").add_argument("task", nargs="?", default="")
+    sub.add_parser("channel-headers", help="(Claude Code 가 부름) board MCP 에 붙을 때 세션 pid 머리글")
     a = p.parse_args(argv)
     if a.cmd == "serve":
         return serve()
@@ -906,7 +1168,8 @@ def main(argv=None):
         return print(url(a.task))
     try:
         return {"new": cmd_new, "wait": cmd_wait, "done": cmd_done, "list": cmd_list, "orphans": cmd_orphans,
-                "push": cmd_push, "pushed": cmd_pushed, "hubpage": cmd_hubpage, "setup": cmd_setup, "reply": cmd_reply}[a.cmd](a)
+                "push": cmd_push, "pushed": cmd_pushed, "hubpage": cmd_hubpage, "setup": cmd_setup, "reply": cmd_reply,
+                "channel-headers": cmd_channel_headers}[a.cmd](a)
     except KeyError as e:
         sys.exit(f"없는 작업: {e} — board list 로 확인")
 

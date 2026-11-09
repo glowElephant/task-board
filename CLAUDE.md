@@ -10,6 +10,9 @@
 - 2026-11-04 밖에서 보기: 세션마다 아티팩트 한 장(`board push`) + 목록 아티팩트 한 장(`board hubpage`, db `tasks`). 목록 주소는 각자 설정 `BOARD_HUB`.
 - 2026-11-04 플러그인 모양(`.claude-plugin/`, `skills/board/`, `hooks/`) + `board setup` — 다른 사람·다른 PC 는 플러그인 설치 두 줄 + setup.
   저장소 github.com/glowElephant/task-board — 2026-11-04 공개(사용자 결정: 공개하되 회사 안에만 알림). 빈 홈에서 `claude plugin marketplace add glowElephant/task-board` → install 시험 통과.
+- 2026-11-09 채널: [보내기]를 세션에 바로 넣는다(`board wait` 불필요). 시험 세션으로 확인 — 쉬는 세션이 깨어나 반영·답(8초), 한 번만, sid 없으면 이름으로, 서버 재시작 3초 뒤 재연결·재배달.
+  이 PC: user MCP `board` 등록(`board setup`), 래퍼 `bin/claude`. PATH 줄(~/.bashrc·~/.profile)은 사용자가 넣는다(자동 모드가 셸 시작 파일 수정을 막음).
+  채널 없이 뜬 세션은 다시 띄울 때까지 `board wait` 그대로 — 둘이 섞여도 된다.
 
 ## 구조
 ```
@@ -19,9 +22,11 @@ skills/board/SKILL.md  세션용 절차·형식(플러그인 스킬 · install.s
 claude-rule.md         세션이 늘 알아야 할 규칙 — 플러그인은 세션 시작 훅(hooks/session_start.py)이, install.sh 는 전역 CLAUDE.md 에 넣는다
 .claude-plugin/        plugin.json · marketplace.json — `claude plugin marketplace add glowElephant/task-board`
 install.sh             플러그인 없이 직접 쓰는 PC 용(스킬 링크 · 전역 규칙 · board setup)
+bin/claude             대화형 claude 에만 채널 옵션을 붙이는 래퍼(PATH 에서 ~/.local/bin 보다 앞)
 test_board.py          해석·고쳐 넣기 자가 점검
 ```
-데이터: `$BOARD_DIR/<작업>/task.md`(+`img/`, `.sent`=보낸 신호, `.seen`=세션이 읽은 표시). 설정 `~/.config/board/env`.
+데이터: `$BOARD_DIR/<작업>/task.md`(+`img/`, `.sent`=보낸 신호, `.seen`=세션이 읽은 표시, `.pushed`=자리 비움 폰 알림 보낸 표시). 설정 `~/.config/board/env`.
+문서 머리 `sid:` = 그 작업을 받을 세션 id(`board new`·`wait`·`push` 가 `$CLAUDE_CODE_SESSION_ID` 로 적는다).
 
 ## 실행/빌드/테스트
 ```bash
@@ -37,6 +42,18 @@ board list; board url <작업>
 - 파일이 원본, 서버는 상태 없음 — 서버가 죽어도 세션·gedit 로 계속 일할 수 있고, 세션은 Read/Edit 로 바로 다룬다.
 - 화면 저장은 그 질문의 답 칸·메모만 그 자리에 고쳐 넣는다(파일 통째 덮기 X) — 세션이 같은 문서의 다른 곳을 고쳐도 안 부딪힌다. 원문 편집만 mtime 비교로 충돌을 거절.
 - 깨우기 = `board wait` 를 세션이 Bash 백그라운드로 건다 → 끝나면 하네스가 세션을 깨운다. `.sent` 가 `.seen` 보다 새것이면 바로 끝나서 "기다리기 전에 보낸 것"도 안 놓친다. 상한 110분(백그라운드 2시간 안).
+- **깨우기 2 = 채널**(2026-11-09, 사용자 "버튼 누르는 행위가 있는데 왜 대기를 해?"·"대기하면 PC 리소스"·"세션이 대기해야 하는 번거로운 일 안 생기게").
+  Claude Code Channels(연구 미리보기, 2.1.319): MCP 서버가 `notifications/claude/channel` 을 보내면 세션이 쉬고 있어도 깨어나고, 바쁘면 줄 선다. 응답 확인(ack)은 없다.
+  이 서버 하나가 `/mcp`(HTTP MCP)로 모든 세션을 받는다 — 세션마다 프로세스를 띄우지 않는다(서버 22 MB·CPU 0.1%, board wait 는 세션당 13~22 MB).
+  `chan_loop`(1.5초)가 `.sent` 를 보고 넣은 뒤 `.seen` — PC 화면·`board reply`(아티팩트) 둘 다 같은 길이고, 나중에 붙은 세션에도 밀린 것이 간다.
+  자리 비움 폰 알림도 30초마다 채널로(채널 세션엔 exit 4 가 없어서). 규칙은 `away_due` 하나 — 자리 비움 한 번에 작업마다 한 번.
+  세션 찾기: headersHelper `board channel-headers` 가 부모 프로세스를 거슬러 claude pid 를 보낸다 → `sessions/<pid>.json` 의 sessionId·name.
+  헤더에 `${CLAUDE_CODE_SESSION_ID}` 는 안 펼쳐진다(빈 값) — 그래서 pid. 배달 = 문서 `sid:` 가 먼저, 없으면 이름이 하나뿐일 때만(같은 이름 여럿이면 안 보낸다 — 잘못 가느니 안 간다).
+  채널이 켜졌는지 = `/proc/<pid>/cmdline` 에 `server:board` — 플래그 없이 뜬 세션도 MCP 로는 붙는데, 거기 넣으면 소리 없이 버려진다.
+  `initialize` 에 protocolVersion `2025-06-18` 로 답한다 — `server/discover`(2026-07-28 신식)에 답하면 채널을 안 본다. -32601 이면 옛 방식으로 내려온다.
+  채널은 `--dangerously-load-development-channels server:board` 로 띄워야만 켜진다(설정·환경변수 없음), 띄울 때마다 경고 창 한 번, `-p` 에선 꺼진다(화면 없는 세션 불가).
+  Orca 는 자기 `claude` 함수가 `command claude` 를 부르니 별칭이 안 먹는다 → PATH 래퍼. `~/.local/bin/claude` 는 자동 업데이트가 갈아 끼워서 못 고친다.
+  쓰지 않은 것: Claude Code 내부 메시지 소켓(`CLAUDE_CODE_MESSAGING_SOCKET`) — 문서에 없는 내부용. 세션 쪽 asyncRewake 훅 — 결국 세션마다 대기가 남는다.
 - "내 차례" = 질문의 마지막 말이 세션(`⇒`)이거나 말이 없음. 상태 필드를 따로 두지 않아 사람이 gedit 로 고쳐도 맞다.
 - 127.0.0.1 만 연다 — 로그인이 없으니 밖으로 열지 않는다. 폰에서 보기는 비밀번호와 함께 따로(2단계).
 - claude.ai 아티팩트는 폐기 — 여러 세션이 읽고 쓰기는 되지만 화면에서 답을 써도 세션을 깨울 방법이 없고(댓글 "Claude 에게 보내기"·지켜보는 세션만), 사내 문서가 밖에 저장된다.
@@ -61,9 +78,12 @@ board list; board url <작업>
 | 증상 | 원인 | 해결 |
 |---|---|---|
 | 코드 블록 안 `# 주석` 이 질문을 쪼갬 | 제목 판정이 펜스를 몰랐다 | `fences()` 로 펜스 안은 제목·답으로 안 읽음(고침, test_board.py 가 지킴) |
+| 채널 세션인데 [보내기]가 안 들어감 | 세션을 플래그 없이 띄움(`/proc/<pid>/cmdline` 에 `server:board` 없음) | `command -v claude` 가 래퍼인지, PATH 줄 확인 후 다시 띄움 |
+| `/api/answer` 가 400 `요청 오류: `(빈 메시지) | 질문 머리에 `[ ]` 가 없어 질문을 못 찾음(StopIteration) | `### [ ] Q1. …` |
 | 옛 txt 가 진행 중/끝 구분 불가 | txt 엔 끝 표시가 없다 | 빈 `→ 사용자:` 칸·`[ ]`/`[~]` 있거나 이틀 안에 고쳤으면 진행 중 |
 
 ## 다음 단계
 - 1단계 끝(2026-11-03 사용자 "다끝난거아냐? 잘작동해") — `board-v1` 은 끝난 작업으로 내림. 아래는 사용자가 부탁할 때만.
 - 2단계 남은 후보: 폰에서 보기(비밀번호) · 세션 생존 표시.
+- 채널이 정식 기능이 되면(연구 미리보기 졸업) 래퍼·경고 창을 정리하고 `board wait` 를 걷어낸다.
 - 공용화: 저장소 위치(개인 GitHub / 팀 저장소) 결정 후 README 설치법 다듬기.

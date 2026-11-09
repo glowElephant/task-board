@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# claude 를 대화형으로 띄울 때만 Task Board 채널을 켠다 — [보내기]가 그 세션에 바로 들어간다(board wait 불필요).
+# PATH 에서 진짜 claude(이 파일이 아닌 첫 번째)를 찾아 넘긴다. -p/--print 와 하위 명령(mcp, update …)은 그대로.
+self=$(readlink -f "$0")
+IFS=: read -ra dirs <<<"$PATH"
+for d in "${dirs[@]}"; do
+  c="$d/claude"
+  [[ -x $c && $(readlink -f "$c") != "$self" ]] && real=$c && break
+done
+[[ -n ${real:-} ]] || { echo "claude 를 PATH 에서 찾지 못했습니다" >&2; exit 127; }
+
+on=1
+case ${1:-} in   # ponytail: 하위 명령 목록은 claude --help 에서 손으로 옮김 — 새 하위 명령은 채널이 붙어도 무시된다
+  agents|attach|auth|auto-mode|doctor|gateway|import|install|logs|mcp|plugin|plugins|purge|respawn|rm|setup-token|stop|kill|ultrareview|update|upgrade) on=0 ;;
+esac
+for a in "$@"; do
+  case $a in -p|--print|--dangerously-load-development-channels*|-h|--help|-v|--version) on=0 ;; esac
+done
+[[ $on = 1 ]] && exec "$real" "$@" --dangerously-load-development-channels server:board
+exec "$real" "$@"

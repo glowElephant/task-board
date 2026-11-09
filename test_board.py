@@ -60,4 +60,30 @@ import tempfile, pathlib as _p
 _f = _p.Path(tempfile.mkdtemp()) / "task.md"
 _f.write_text("---\ntitle: x\nlocal: yes\n---\n본문\n"); assert board.local_only(_f)
 _f.write_text("---\ntitle: x\n---\n본문\n"); assert not board.local_only(_f)
+
+# 채널 배달 대상: sid 가 먼저, 없으면 이름이 하나뿐일 때만(같은 이름이 여럿이면 안 보낸다)
+import time as _t
+live = [("m1", 11, {"sessionId": "s1", "name": "가"}), ("m2", 12, {"sessionId": "s2", "name": "나"})]
+board._cinfo.update(at=_t.time() + 1e9, v=(live, {"가": 1, "나": 2}))
+assert board.chan_targets({"sid": "s2", "session": "가"}) == ["m2"]
+assert board.chan_targets({"session": "가 [abc123]"}) == ["m1"]
+assert board.chan_targets({"session": "나"}) == []
+assert board.chan_targets({"sid": "없는세션", "session": "다"}) == []
+
+# deliver: [보내기]는 한 번만 넣고 읽음 처리, 자리 비움 폰 알림은 자리 비움 한 번에 작업마다 한 번
+import queue as _q
+board.BOARD, board.EXTRA, board.HUB = _p.Path(tempfile.mkdtemp()), [], ""
+(board.BOARD / "t").mkdir()
+(board.BOARD / "t" / "task.md").write_text("---\ntitle: 시험 작업\nsession: 가\nsid: s1\n---\n## 정할 것\n### [ ] Q1. 할까?\n-> 응\n")
+board.send(board.BOARD / "t", ["Q1"])
+q = _q.Queue()
+board._chans["m1"] = {"pid": 11, "q": q}
+board.deliver()
+board.deliver()
+assert q.qsize() == 1 and "-> 응" in q.get()["params"]["content"] and not board.unread(board.BOARD / "t")
+(board.BOARD / "t" / "task.md").write_text("---\ntitle: 시험 작업\nsession: 가\nsid: s1\n---\n## 정할 것\n### [ ] Q1. 할까?\n-> 응\n⇒ 되물음\n")
+away = {"state": "away", "away_since": 100}
+board.deliver(away)
+board.deliver(away)
+assert q.qsize() == 1 and "내 차례 1건" in q.get()["params"]["content"]
 print("ok")
