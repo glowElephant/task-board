@@ -95,4 +95,12 @@ _os.environ["CLAUDE_CODE_SESSION_ID"] = "s1"; _reply(); assert not board.unread(
 _t.sleep(0.02); board.send(board.BOARD / "t", ["Q1"]); _reply(); assert board.unread(board.BOARD / "t")   # 밀린 [보내기]는 삼키지 않는다(파일 시각 단위 때문에 잠깐 띄움)
 _t.sleep(0.02); (board.BOARD / "t" / ".seen").write_text("x"); _t.sleep(0.02)
 _os.environ["CLAUDE_CODE_SESSION_ID"] = "남"; _reply(); assert board.unread(board.BOARD / "t")
+# 세션 아티팩트 묶음: 다시 띄워 ref 가 바뀌어도 sid 가 같으면 한 장, 옛 ref 기록(주소)을 이어 쓴다
+for n, ref in (("a1", "aaaaaa"), ("a2", "bbbbbb")):
+    (board.BOARD / n).mkdir()
+    (board.BOARD / n / "task.md").write_text(f"---\ntitle: {n}\nsession: 나 [{ref}]\nsid: S9\n---\n## 정할 것\n")
+assert board.sess_key("a1") == board.sess_key("a2") == "S9" and set(board.session_tasks("S9")) == {"a1", "a2"}
+(board.BOARD / ".sessions").mkdir(exist_ok=True)
+(board.BOARD / ".sessions" / "aaaaaa.json").write_text('{"url": "https://x/old"}')
+assert board.sess_state("S9", old="aaaaaa")["url"] == "https://x/old" and (board.BOARD / ".sessions" / "S9.json").is_file()
 print("ok")

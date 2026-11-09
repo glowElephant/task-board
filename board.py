@@ -878,16 +878,24 @@ def session_key(session):
     return m.group(1) if m else (re.sub(r"[^A-Za-z0-9_-]", "_", session or "unknown")[:60] or "unknown")
 
 
-def session_tasks(session):
-    return [t for t in all_ids() if not t.startswith("txt:") and summary(t)["session"] == session and summary(t)["status"] != "끝"
+def sess_key(tid):
+    """세션 아티팩트 묶음 키 — 문서 sid(다시 띄워도 그대로), 없으면 이름 옆 ref(sid 전 옛 문서).
+    ref 로만 묶으면 세션을 다시 띄울 때 ref 가 바뀌어 한 세션의 아티팩트가 둘로 갈라졌다(11-09 일괄 재시작)."""
+    meta = split(resolve(tid)[0].read_text(encoding="utf-8", errors="replace"))[0]
+    return meta.get("sid") or session_key(meta.get("session", ""))
+
+
+def session_tasks(key):
+    return [t for t in all_ids() if not t.startswith("txt:") and sess_key(t) == key and summary(t)["status"] != "끝"
             and not local_only(resolve(t)[0])]
 
 
-def page_for(session, also=()):
+def page_for(key, session, also=()):
     """세션 아티팩트 한 장 — PC 화면과 같은 코드(web/index.html)에 그 세션의 진행 중 작업만 심는다(window.BOARD.mode='session').
     세션마다 한 장인 이유(11-04 사용자 "같은 세션끼리만 두면 되잖아"): [보내기]는 아티팩트를 올린 세션만 깨우니 세션 단위면 충분하고,
     작업마다 따로면 아티팩트가 너무 많아지고 처음 보내기 허락도 작업마다 묻는다. 사진은 data: 로(장당 3 MB · 합쳐 10 MB)."""
-    ids = list(dict.fromkeys(session_tasks(session) + [t for t in also if t not in session_tasks(session)]))
+    mine = session_tasks(key)
+    ids = list(dict.fromkeys(mine + [t for t in also if t not in mine]))
     tasks, details, images, total = [], {}, {}, 0
     for tid in ids:
         d = detail(tid)
@@ -909,8 +917,12 @@ def page_for(session, also=()):
     return page.replace("<script>\nconst $ =", "<script>window.BOARD = " + js + ";</script>\n<script>\nconst $ =", 1)
 
 
-def sess_state(session, upd=None):
-    f = BOARD / ".sessions" / (session_key(session) + ".json")
+def sess_state(key, upd=None, old=""):
+    """세션 아티팩트 기록(.sessions/<키>.json). 키 기록이 없고 옛 ref 기록(old)이 있으면 그것을 이어 쓴다 — 같은 아티팩트 주소 유지."""
+    f = BOARD / ".sessions" / (key + ".json")
+    o = BOARD / ".sessions" / (old + ".json")
+    if old and old != key and not f.exists() and o.is_file():
+        write(f, o.read_text(encoding="utf-8"))
     try:
         st = json.loads(f.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -967,9 +979,10 @@ def cmd_push(a):
         sys.exit("문서 머리에 session: 이 없습니다 — '이름 [ref]' 를 넣고 다시")
     out = pathlib.Path(a.out).expanduser() if a.out else BOARD / ".sessions"
     out.mkdir(parents=True, exist_ok=True)
-    ss, key = sess_state(s["session"]), session_key(s["session"])
+    key = sess_key(a.task)
+    ss = sess_state(key, old=session_key(s["session"]))
     page = out / f"{key}.html"
-    write(page, page_for(s["session"], also=[a.task]))   # 방금 끝낸 작업도 이번 한 번은 '끝'으로 보이게
+    write(page, page_for(key, s["session"], also=[a.task]))   # 방금 끝낸 작업도 이번 한 번은 '끝'으로 보이게
     st = remote(d)
     url = ss.get("url", "")
     row = {"pc": PC, "task": a.task, "title": s["title"], "session": s["session"], "status": s["status"],
@@ -1061,7 +1074,7 @@ def cmd_hubpage(a):
 def cmd_pushed(a):
     f, d = resolve(a.task)
     (d / ".remote").mkdir(exist_ok=True)
-    sess = summary(a.task)["session"]
+    sess = sess_key(a.task)
     st = remote(d)
     if a.reset:
         st.pop("version", None)
