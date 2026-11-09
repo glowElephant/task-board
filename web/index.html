@@ -148,6 +148,12 @@ const $ = (s, el = document) => el.querySelector(s);
 const h = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.flat().filter(k => k != null)); return e; };
 const theme = document.documentElement.dataset.theme, dark = theme === 'dark' || (theme !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
 marked.setOptions({ breaks: true });   // 세션은 txt 처럼 줄 단위로 쓴다 — 줄바꿈을 그대로
+// 물결표 하나는 글자 그대로("11-02~08", "Q1~Q4") — marked 는 ~하나~ 도 취소선으로 읽어 기간·범위가 줄 그어졌다(11-09). ~~두 개~~ 만 취소선.
+marked.use({ tokenizer: { del(src) {
+  const m = /^~~(?=[^\s~])([\s\S]*?[^\s~])~~(?=[^~]|$)/.exec(src);
+  if (m) return { type: 'del', raw: m[0], text: m[1], tokens: this.lexer.inlineTokens(m[1]) };
+  if (src[0] === '~') return { type: 'text', raw: '~', text: '~' };
+} } });
 mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'neutral', securityLevel: 'loose' });
 
 let tasks = [], cur = null, view = 'task', drafts = {}, stale = false;
