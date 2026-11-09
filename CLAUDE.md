@@ -85,6 +85,7 @@ board list; board url <작업>
 |---|---|---|
 | 코드 블록 안 `# 주석` 이 질문을 쪼갬 | 제목 판정이 펜스를 몰랐다 | `fences()` 로 펜스 안은 제목·답으로 안 읽음(고침, test_board.py 가 지킴) |
 | 채널 세션인데 [보내기]가 안 들어감 | 세션을 플래그 없이 띄움(`/proc/<pid>/cmdline` 에 `server:board` 없음) | `command -v claude` 가 래퍼인지, PATH 줄 확인 후 다시 띄움 |
+| 서버 재시작 뒤 채널 세션 전부 끊김(`/api/channels` 가 `[]`) | 세션이 옛 MCP 세션 id 로 스트림(GET)만 다시 여는데 서버가 404 → Claude Code 는 두 번 해 보고 포기("SSE GET-stream reconnection exhausted", 11-09 install.sh 재시작) | 모르는 id 라도 머리글 `X-Board-Pid` 가 산 프로세스면 받아 준다(고침). 이미 끊긴 세션은 그 세션에 `/mcp reconnect board` |
 | `/api/answer` 가 400 `요청 오류: `(빈 메시지) | 질문 머리에 `[ ]` 가 없어 질문을 못 찾음(StopIteration) | `### [ ] Q1. …` |
 | 옛 txt 가 진행 중/끝 구분 불가 | txt 엔 끝 표시가 없다 | 빈 `→ 사용자:` 칸·`[ ]`/`[~]` 있거나 이틀 안에 고쳤으면 진행 중 |
 

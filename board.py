@@ -513,8 +513,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def mcp_stream(self):
         """서버 → 세션 스트림(SSE). 연결마다 스레드 하나가 큐를 기다린다 — 세션 쪽 프로세스는 없다."""
         sid = self.headers.get("Mcp-Session-Id", "")
+        try:
+            pid = int(self.headers.get("X-Board-Pid") or 0)
+        except ValueError:
+            pid = 0
         with _chans_lock:
             c = _chans.get(sid)
+            if c is None and sid and pid > 0 and pathlib.Path(f"/proc/{pid}").exists():
+                # 서버가 다시 켜진 뒤 세션이 옛 세션 id 로 스트림만 다시 연다 — 404 를 주면 Claude Code 는 두 번 해 보고 포기한다
+                # ("SSE GET-stream reconnection exhausted", 11-09 install.sh 재시작에 15곳 전부 끊김). 머리글의 pid 로 받아 준다.
+                c = _chans[sid] = {"pid": pid, "q": None}
+                print(f"[채널] 다시 붙음 pid {pid}", flush=True)
             if c is not None:
                 q = c["q"] = queue.Queue()
         if c is None:
