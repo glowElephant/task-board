@@ -280,7 +280,7 @@ def summary(tid):
             "status": "끝" if meta.get("status", "") in DONE else "진행 중",
             "mine": sum(i["turn"] == "me" for i in items), "waiting": sum(i["turn"] == "claude" for i in items),
             "asks": [f"{i['id']}. {i['title']}" for i in items if i["turn"] == "me"],
-            "listening": tid in listeners() or bool(chan_targets(meta)), "unread": unread(d), "unpushed": unpushed(tid), "mtime": f.stat().st_mtime}
+            "listening": tid in listeners() or bool(chan_targets(meta)), "unread": unread(d), "mtime": f.stat().st_mtime}
 
 
 def all_ids():
@@ -791,8 +791,7 @@ def report_text(tid, d, channel=False):
             out.append(f"  {b['id']}. {b['title']}\n    -> " + b["entries"][-1]["text"].replace("\n", "\n    -> "))
         if b["type"] == "memo" and MEMO in info.get("items", []) and b["entries"] and b["entries"][-1]["who"] == "me":
             out.append("  메모:\n    -> " + b["entries"][-1]["text"].replace("\n", "\n    -> "))
-    push = HUB and not local_only(d / "task.md")
-    out.append("→ task.md 를 다시 읽고 질문마다 ⇒ 로 반영(결정된 건 [v]) 한 뒤" + (f" board push {tid} 로 아티팩트에도 올린다." if push else " 끝.")
+    out.append("→ task.md 를 다시 읽고 질문마다 ⇒ 로 반영(결정된 건 [v]). PC 화면에서 보낸 것이라 아티팩트는 안 올린다."
                + (" 채널로 받았으니 board wait 는 걸지 않는다." if channel else " 그리고 board wait 를 다시 건다."))
     return "\n".join(out)
 
@@ -962,19 +961,17 @@ def local_only(f):
     return split(f.read_text(encoding="utf-8", errors="replace"))[0].get("local", "").lower() in ("yes", "true", "1", "예")
 
 
-def unpushed(tid):
-    """문서가 마지막으로 아티팩트에 올린 뒤 바뀌었나(목록 주소가 없거나 로컬 전용이면 늘 False)."""
-    if not HUB or tid.startswith("txt:"):
-        return False
+def changed(tid):
+    """마지막으로 아티팩트에 올린 뒤 문서가 바뀌었나. 처음 올리는 거면 None."""
     f, d = resolve(tid)
-    if local_only(f):
-        return False
-    return f.stat().st_mtime > remote(d).get("at", 0)
+    at = remote(d).get("at")
+    return None if not remote(d).get("version") else f.stat().st_mtime > (at or 0)
 
 
 def cmd_push(a):
     """세션 아티팩트(그 세션의 진행 중 작업 전부)·목록 줄을 내보낼 준비를 하고, 세션이 부를 도구 호출을 순서대로 찍는다.
-    세션이 문서를 고친 그 자리에서 부른다 — 중계 세션 없이 두 곳(로컬 보드·아티팩트)이 같은 문서에서 그려진다(11-04 사용자 결정)."""
+    올리는 때는 셋뿐이다(11-10 사용자 B): 작업이 처음 생길 때, [최신으로](`[board sync]`), 아티팩트에서 온 답을 반영했을 때(--now).
+    고칠 때마다 올리던 것(11-04)은 도구 호출 4번씩이라 모든 작업이 보드로 오면서 너무 많아졌다 — 그 밖엔 건너뛴다."""
     if not HUB:
         sys.exit("BOARD_HUB(목록 아티팩트 주소)가 설정에 없습니다 — ~/.config/board/env")
     f, d = resolve(a.task)
@@ -986,29 +983,47 @@ def cmd_push(a):
     s = summary(a.task)
     if not s["session"]:
         sys.exit("문서 머리에 session: 이 없습니다 — '이름 [ref]' 를 넣고 다시")
-    out = pathlib.Path(a.out).expanduser() if a.out else BOARD / ".sessions"
-    out.mkdir(parents=True, exist_ok=True)
     key = sess_key(a.task)
     ss = sess_state(key, old=session_key(s["session"]))
+    url = ss.get("url", "")
+    if url and changed(a.task) is not None and not a.now:
+        print(f"[push] 건너뜀 — {a.task} 는 이미 아티팩트에 있다. 아티팩트는 [최신으로]를 눌렀을 때만 다시 올린다(11-10 사용자 결정).\n"
+              f"  `[board sync]` 댓글이나 아티팩트에서 온 답을 반영한 뒤라면: board push {a.task} --now")
+        return print(wait_hint([a.task]))
+    # 같은 세션의 바뀐 작업 줄도 같이 — 화면은 늘 그 세션 전부를 지금 문서로 그리니 목록 줄도 맞춘다(끝낸 작업 포함)
+    tids = list(dict.fromkeys([a.task] + [t for t in session_tasks(key) if changed(t) is not False]
+                              + [t for t in all_ids() if not t.startswith("txt:") and sess_key(t) == key
+                                 and not local_only(resolve(t)[0]) and changed(t)]))
+    out = pathlib.Path(a.out).expanduser() if a.out else BOARD / ".sessions"
+    out.mkdir(parents=True, exist_ok=True)
     page = out / f"{key}.html"
     write(page, page_for(key, s["session"], also=[a.task]))   # 방금 끝낸 작업도 이번 한 번은 '끝'으로 보이게
-    st = remote(d)
-    url = ss.get("url", "")
-    row = {"pc": PC, "task": a.task, "title": s["title"], "session": s["session"], "status": s["status"],
-           "mine": s["mine"], "waiting": s["waiting"], "asks": s["asks"][:5], "url": (url + "#" + a.task) if url else "", "updated": time.time(),
-           "blocks": detail(a.task)["blocks"]}   # 목록이 PC 화면처럼 오른쪽에 내용을 그린다(답은 세션 아티팩트에서)
-    (d / ".remote").mkdir(exist_ok=True)
-    write(d / ".remote" / "row.json", json.dumps(row, ensure_ascii=False))
-    print(f"[push] {a.task} — 세션 아티팩트({s['session']})·목록 줄. 아래 순서대로 부르세요.")
+    writes = []
+    for t in tids:
+        st, td, ts = remote(resolve(t)[1]), resolve(t)[1], summary(t)
+        row = {"pc": PC, "task": t, "title": ts["title"], "session": ts["session"], "status": ts["status"],
+               "mine": ts["mine"], "waiting": ts["waiting"], "asks": ts["asks"][:5], "url": (url + "#" + t) if url else "", "updated": time.time(),
+               "blocks": detail(t)["blocks"]}   # 목록이 PC 화면처럼 오른쪽에 내용을 그린다(답은 세션 아티팩트에서)
+        (td / ".remote").mkdir(exist_ok=True)
+        write(td / ".remote" / "row.json", json.dumps(row, ensure_ascii=False))
+        w = {"op": "set", "collection": "tasks", "doc_id": row_id(t), "file_path": str(td / ".remote" / "row.json")}
+        if st.get("version"):
+            w["if_version"] = st["version"]
+        writes.append(w)
+    print(f"[push] {' '.join(tids)} — 세션 아티팩트({s['session']})·목록 줄. 아래 순서대로 부르세요.")
     if url:   # 막 만든 아티팩트는 연결이 붙기 전 온 댓글을 놓칠 수 있다(11-04 실측) — 올릴 때마다 먼저 줍는다
         print(f"0) ArtifactComments read: url={url} — 열린 스레드의 [board …] 중 문서에 아직 없는 것을 board reply 로 먼저 넣고 resolve")
         print(f"1) Artifact publish: file_path={page}  url={url}")
     else:
         print(f'1) Artifact publish: file_path={page}  icon="checklist"  capabilities={{"comments": {{}}, "assets": {{}}}}  (이 세션의 첫 아티팩트)')
-        print(f"   → board pushed {a.task} --url <결과 주소>   (세션 아티팩트 주소 기록 + 목록 줄 링크)")
-    v = st.get("version")
-    print(f"2) ArtifactData set: url={HUB}  collection=tasks  doc_id={row_id(a.task)}  file_path={d / '.remote' / 'row.json'}" + (f"  if_version={v}" if v else "  (처음 — if_version 없이)"))
-    print(f"3) board pushed {a.task} --version <결과 version>")
+        print(f"   → board pushed {' '.join(tids)} --url <결과 주소>   (세션 아티팩트 주소 기록 + 목록 줄 링크)")
+    if len(writes) == 1:
+        w = writes[0]
+        print(f"2) ArtifactData set: url={HUB}  collection=tasks  doc_id={w['doc_id']}  file_path={w['file_path']}"
+              + (f"  if_version={w['if_version']}" if "if_version" in w else "  (처음 — if_version 없이)"))
+    else:
+        print(f"2) ArtifactData batch: url={HUB}  writes={json.dumps(writes, ensure_ascii=False)}")
+    print(f"3) board pushed {' '.join(tids)} --version <결과 version{'(작업 순서대로)' if len(tids) > 1 else ''}>")
     print("   버전이 안 맞아 거절되면 결과에 나온 현재 version 으로 2) 를 다시. 아티팩트가 없다고 나오면 board pushed <작업> --reset 뒤 다시 push.")
     print(wait_hint([a.task]))
 
@@ -1081,25 +1096,28 @@ def cmd_hubpage(a):
 
 
 def cmd_pushed(a):
-    f, d = resolve(a.task)
-    (d / ".remote").mkdir(exist_ok=True)
-    sess = sess_key(a.task)
-    st = remote(d)
-    if a.reset:
-        st.pop("version", None)
-        sess_state(sess, {"url": ""})
-    if a.url:
-        sess_state(sess, {"url": a.url})
-        rowf = d / ".remote" / "row.json"
-        if rowf.is_file():
-            row = json.loads(rowf.read_text(encoding="utf-8")); row["url"] = a.url + "#" + a.task
-            write(rowf, json.dumps(row, ensure_ascii=False))
-    if a.version:
-        st["version"] = a.version
-    if a.url or a.version:
-        st["at"] = time.time()
-    write(d / ".remote" / "state.json", json.dumps(st))
-    print(f"기록함: {a.task} {st} · 세션 {sess_state(sess)}")
+    if a.version and len(a.version) != len(a.task):
+        sys.exit(f"--version 은 작업 수({len(a.task)})만큼 — 작업 순서대로")
+    for i, t in enumerate(a.task):
+        f, d = resolve(t)
+        (d / ".remote").mkdir(exist_ok=True)
+        sess = sess_key(t)
+        st = remote(d)
+        if a.reset:
+            st.pop("version", None)
+            sess_state(sess, {"url": ""})
+        if a.url:
+            sess_state(sess, {"url": a.url})
+            rowf = d / ".remote" / "row.json"
+            if rowf.is_file():
+                row = json.loads(rowf.read_text(encoding="utf-8")); row["url"] = a.url + "#" + t
+                write(rowf, json.dumps(row, ensure_ascii=False))
+        if a.version:
+            st["version"] = a.version[i]
+        if a.url or a.version:
+            st["at"] = time.time()
+        write(d / ".remote" / "state.json", json.dumps(st))
+        print(f"기록함: {t} {st} · 세션 {sess_state(sess)}")
 
 
 def cmd_reply(a):
@@ -1132,7 +1150,8 @@ def cmd_reply(a):
     send(d, [a.item])
     if sid and sid == os.environ.get("CLAUDE_CODE_SESSION_ID") and not pending:
         (d / ".seen").write_text(now(), encoding="utf-8")
-        return print(f"보냄: {a.task} {a.item} — 이 세션이 받은 답이라 다시 깨우지 않는다. task.md 를 다시 Read 하고 ⇒ 로 반영한다.")
+        return print(f"보냄: {a.task} {a.item} — 이 세션이 받은 답이라 다시 깨우지 않는다. task.md 를 다시 Read 하고 ⇒ 로 반영한 뒤"
+                     f" board push {a.task} --now — 아티팩트에서 온 답이라 그 화면에 바로 보이게.")
     s = summary(a.task)
     if s["listening"]:
         print(f"보냄: {a.task} {a.item} — {s['session']} 가 듣는 중(채널 또는 board wait)이라 곧 깨어납니다.")
@@ -1171,6 +1190,7 @@ def main(argv=None):
     sub.add_parser("orphans", help="보냈는데 듣는 세션이 없어 안 읽힌 작업과 깨울 메시지")
     pu = sub.add_parser("push", help="작업 아티팩트·목록 줄 내보낼 준비 + 부를 도구 호출 안내")
     pu.add_argument("task")
+    pu.add_argument("--now", action="store_true", help="이미 올린 작업도 지금 올린다 — [최신으로](board sync)·아티팩트에서 온 답 반영 뒤")
     pu.add_argument("--out", help="만들 파일을 둘 폴더(기본 <작업>/.remote) — Artifact 가 거절하면 세션 scratchpad 로")
     sub.add_parser("hubpage", help="목록 아티팩트 화면 만들기(화면 코드 고쳤을 때만)").add_argument("out")
     su = sub.add_parser("setup", help="처음 설정 — 설정 파일·명령 링크·PC 화면·목록 아티팩트 안내(여러 번 해도 같음)")
@@ -1178,9 +1198,9 @@ def main(argv=None):
     su.add_argument("--pc", help="이 PC 이름(기본 hostname)")
     su.add_argument("--no-server", action="store_true", help="PC 화면(서버)은 안 켬")
     pd = sub.add_parser("pushed", help="push 뒤 결과(아티팩트 주소·목록 줄 버전) 기록")
-    pd.add_argument("task")
+    pd.add_argument("task", nargs="+")
     pd.add_argument("--url")
-    pd.add_argument("--version", type=int)
+    pd.add_argument("--version", type=int, nargs="+", help="작업 순서대로")
     pd.add_argument("--reset", action="store_true", help="아티팩트가 지워졌을 때 — 주소·버전을 잊는다")
     rp = sub.add_parser("reply", help="바깥 화면에서 온 답을 문서에 넣기")
     rp.add_argument("task")

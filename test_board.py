@@ -103,4 +103,22 @@ assert board.sess_key("a1") == board.sess_key("a2") == "S9" and set(board.sessio
 (board.BOARD / ".sessions").mkdir(exist_ok=True)
 (board.BOARD / ".sessions" / "aaaaaa.json").write_text('{"url": "https://x/old"}')
 assert board.sess_state("S9", old="aaaaaa")["url"] == "https://x/old" and (board.BOARD / ".sessions" / "S9.json").is_file()
+
+# push: 처음 생긴 작업은 올리고, 이미 있으면 건너뛴다(--now 일 때만 — 11-10 B). --now 는 같은 세션의 바뀐 작업 줄도 같이
+import io as _io, contextlib as _cl
+board.HUB = "https://hub"; _os.environ["CLAUDE_CODE_SESSION_ID"] = "S9"   # push 가 문서에 이 세션 sid 를 적는다
+_push = lambda t, now=False: board.cmd_push(_a.Namespace(task=t, now=now, out=None))
+def _out(fn):
+    b = _io.StringIO()
+    with _cl.redirect_stdout(b):
+        fn()
+    return b.getvalue()
+o = _out(lambda: _push("a1"))
+assert "1) Artifact publish" in o and "ArtifactData batch" in o and "board pushed a1 a2 --version" in o, o
+_out(lambda: board.cmd_pushed(_a.Namespace(task=["a1", "a2"], url=None, version=[3, 4], reset=False)))
+assert board.remote(board.BOARD / "a2")["version"] == 4 and board.changed("a1") is False
+assert "건너뜀" in _out(lambda: _push("a1"))
+_t.sleep(0.02); (board.BOARD / "a2" / "task.md").write_text("---\ntitle: a2\nsession: 나 [bbbbbb]\nsid: S9\n---\n## 정할 것\n### [ ] Q1. 새 질문\n")
+o = _out(lambda: _push("a1", now=True))
+assert '"if_version": 4' in o and "board pushed a1 a2" in o, o
 print("ok")

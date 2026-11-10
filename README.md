@@ -37,7 +37,7 @@ board new <작업> --title "제목" --session "세션 이름 [ref]"   # 문서 �
 board wait <작업>          # 채널 없는 세션만 — [보내기]까지 대기(Bash run_in_background)
 board done <작업>          # 끝난 작업으로
 board list                 # 목록
-board push <작업>          # 밖에서 보는 아티팩트에도 올림(찍힌 순서대로 도구 호출)
+board push <작업> [--now]  # 밖에서 보는 아티팩트에 올림(찍힌 순서대로 도구 호출). 이미 올린 작업은 --now([최신으로]) 때만
 ```
 
 문서 형식과 절차(아티팩트 push 포함)는 [`skills/board/SKILL.md`](skills/board/SKILL.md).

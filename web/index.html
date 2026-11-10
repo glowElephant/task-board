@@ -435,18 +435,17 @@ function renderTask() {
     h('div', {}, h('h1', { textContent: t.title }),
       h('div', { className: 'meta' },
         h('span', { className: 'pill ' + (doneNow ? 'done' : t.mine ? 'me' : 'claude'), textContent: doneNow ? '끝' : t.mine ? `내 차례 ${t.mine}` : t.kind === 'txt' ? 'txt 문서' : '세션 차례' }),
-        h('span', { textContent: t.session }), h('span', { textContent: when(t.mtime) + ' 갱신' }),
-        !R && t.unpushed ? h('span', { className: 'pill me', textContent: '아티팩트에 아직 안 올림', title: '세션이 board push 를 안 했습니다' }) : null)),
+        h('span', { textContent: t.session }), h('span', { textContent: when(t.mtime) + ' 갱신' }))),
     h('div', { className: 'actions' }, ...(t.kind === 'task' && !R ? [
       h('button', { type: 'button', textContent: '원문 편집', onclick: () => renderRaw() }),
       h('button', { type: 'button', textContent: doneNow ? '다시 진행' : '끝으로', onclick: async () => { cur = await api('/api/status', { id: t.id, done: !doneNow }); await refreshList(); renderTask(); } }),
     ] : [])));
   const out = [head];
   if (R && R.mode === 'session' && R.hub) out.unshift(h('a', { href: R.hub, target: '_blank', rel: 'noopener', textContent: '← Task Board 목록(모든 PC·세션)' }));
-  if (HUB) out.push(h('div', { className: 'banner' }, h('span', { textContent: `${t.pc} · ${shortSession(t.session)} — 세션이 질문·답을 쓸 때마다 바로 바뀝니다. 답은 각 질문의 '답하기'(작업 아티팩트)에서.` }),
+  if (HUB) out.push(h('div', { className: 'banner' }, h('span', { textContent: `${t.pc} · ${shortSession(t.session)} — ${when(t.updated)} 기준(세션 아티팩트에서 [최신으로]를 누르면 바뀝니다). 답은 각 질문의 '답하기'(작업 아티팩트)에서.` }),
     t.url ? h('a', { className: 'answer-link', href: t.url, target: '_blank', rel: 'noopener', textContent: '작업 아티팩트 ↗' }) : null));
-  else if (R) {   // 세션이 문서를 고칠 때마다 다시 올린다. [최신으로] = 그 세션에게 다시 올려 달라는 요청
-    const msg = h('span', { textContent: `PC ${R.pc} · ${shortSession(R.session)} 의 작업 — 문서 ${when(R.at)} 기준. 세션이 질문·답을 쓸 때마다 다시 올립니다.` });
+  else if (R) {   // 아티팩트는 [최신으로]를 눌렀을 때만 다시 올라온다(11-10). [최신으로] = 그 세션에게 지금 문서로 올려 달라는 요청
+    const msg = h('span', { textContent: `PC ${R.pc} · ${shortSession(R.session)} 의 작업 — 문서 ${when(R.at)} 기준. [최신으로]를 누르면 세션이 지금 문서로 다시 올립니다.` });
     const btn = h('button', { type: 'button', textContent: '최신으로', title: '이 세션이 PC 문서로 다시 올립니다 — 세션이 다른 일 중이면 늦을 수 있음' });
     btn.onclick = async () => {
       btn.disabled = true;
@@ -454,7 +453,7 @@ function renderTask() {
         if (!comments) throw new Error('이 화면에선 쓸 수 없습니다(댓글 권한)');
         const can = await comments.canSendToClaude().catch(() => 'off');
         if (can !== 'available') throw new Error(why[can] || can);
-        await comments.sendToClaude({ anchor: await comments.anchorFor($('#page')), text: `[board sync] ${cur.id}\n최신으로 다시 올려 주세요` });
+        await comments.sendToClaude({ anchor: await comments.anchorFor($('#page')), text: `[board sync] ${cur.id}\n최신으로 다시 올려 주세요 — board push ${cur.id} --now` });
         msg.textContent = '요청했습니다 — 10~20초 뒤 화면이 새 내용으로 다시 열립니다.';
       } catch (e) { msg.textContent = '실패: ' + e.message; btn.disabled = false; }
     };
