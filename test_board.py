@@ -121,4 +121,18 @@ assert "건너뜀" in _out(lambda: _push("a1"))
 _t.sleep(0.02); (board.BOARD / "a2" / "task.md").write_text("---\ntitle: a2\nsession: 나 [bbbbbb]\nsid: S9\n---\n## 정할 것\n### [ ] Q1. 새 질문\n")
 o = _out(lambda: _push("a1", now=True))
 assert '"if_version": 4' in o and "board pushed a1 a2" in o, o
+# 받은 시각: 서버 시작 때 처음 보는 옛 문서의 말은 '' (모름), 그 뒤 새로 생긴 말만 문서 수정 시각. 같은 글 두 번도 따로
+_sd = _p.Path(tempfile.mkdtemp())
+_b = blocks(DOC)
+board.stamp(_sd, _b, 0, first=True)
+assert [e["at"] for b in _b for e in b.get("entries", ())] == ["", "", ""]
+_b = blocks(board.add_answer(board.add_answer(DOC, "Q1", "ㅇㅋ"), "Q3", "ㅇㅋ"))
+board.stamp(_sd, _b, _t.mktime((2026, 11, 11, 9, 5, 0, 0, 0, -1)))
+_at = {(b["id"], e["text"]): e["at"] for b in _b if b["type"] == "item" for e in b["entries"]}
+_q3 = [e["at"] for b in _b if b.get("id") == "Q3" for e in b["entries"]]
+assert _q3 == ["", "2026-11-11 09:05"], _q3
+assert _at[("Q1", "ㅇㅋ")] == "2026-11-11 09:05" and _at[("Q2", "첫 답")] == ""
+_sd2 = _p.Path(tempfile.mkdtemp()); _b = blocks(board.add_answer(DOC, "Q1", "새 작업 말"))
+board.stamp(_sd2, _b, _t.mktime((2026, 11, 11, 9, 6, 0, 0, 0, -1)))   # 서버가 떠 있을 때 생긴 문서는 처음부터 시각
+assert [e["at"] for b in _b if b.get("id") == "Q1" for e in b["entries"]] == ["2026-11-11 09:06"]
 print("ok")

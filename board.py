@@ -20,7 +20,9 @@ BOARD_NOTIFY(0 이면 PC 알림 끔) · BOARD_AWAY_MIN(입력 없이 몇 분이�
 """
 import argparse
 import base64
+import collections
 import datetime
+import hashlib
 import http.server
 import json
 import mimetypes
@@ -120,6 +122,41 @@ def scan(lines):
         else:
             desc.append(ln)
     return desc, ents
+
+
+NOW = re.compile(r"^[-*\s]*(?:\*\*)?지금(?:\*\*)?\s*[:：]\s*(.+)$", re.M)
+
+
+def brief(body):
+    """`## 요약` 본문."""
+    m = re.search(r"^##\s*요약[ \t]*\n(.*?)(?=^#{1,3}\s|\Z)", body, re.M | re.S)
+    return m.group(1).strip() if m else ""
+
+
+def doing(br):
+    """지금 하는 일 한 줄 — 요약의 `지금: …` 줄, 없으면 요약 첫 줄(11-11 사용자 "뭐가 진행중인지 알기가 힘들거든")."""
+    m = NOW.search(br)
+    line = m.group(1) if m else next((l for l in br.split("\n") if l.strip()), "")
+    return re.sub(r"\*\*|`", "", line).strip(" -*")[:140]
+
+
+_live = {"at": 0.0, "v": {}}
+
+
+def live():
+    """sid → 'busy'·'idle' — Claude Code 가 sessions/<pid>.json 에 적는 status(살아 있는 pid 만). 3초 캐시.
+    세션 단위다 — 일하는 중이어도 이 작업이 아닐 수 있다. 아티팩트(찍어 둔 사진)엔 안 그린다."""
+    if time.time() - _live["at"] > 3:
+        v = {}
+        for f in pathlib.Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude").glob("sessions/*.json"):
+            try:
+                st = json.loads(f.read_text(encoding="utf-8"))
+                if pathlib.Path(f"/proc/{st['pid']}").exists():
+                    v[st["sessionId"]] = "idle" if st.get("status") == "idle" else "busy"
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        _live.update(at=time.time(), v=v)
+    return _live["v"]
 
 
 def turn(status, ents):
@@ -280,7 +317,8 @@ def summary(tid):
             "status": "끝" if meta.get("status", "") in DONE else "진행 중",
             "mine": sum(i["turn"] == "me" for i in items), "waiting": sum(i["turn"] == "claude" for i in items),
             "asks": [f"{i['id']}. {i['title']}" for i in items if i["turn"] == "me"],
-            "listening": tid in listeners() or bool(chan_targets(meta)), "unread": unread(d), "mtime": f.stat().st_mtime}
+            "listening": tid in listeners() or bool(chan_targets(meta)), "unread": unread(d), "mtime": f.stat().st_mtime,
+            "now": doing(brief(body)), "brief": brief(body)[:600], "live": live().get(meta.get("sid", ""))}
 
 
 def all_ids():
@@ -301,7 +339,44 @@ def detail(tid):
     if d is not None:
         meta, body = split(text)
         out["blocks"] = parse(body)
+        stamp(d, out["blocks"], f.stat().st_mtime)
     return out
+
+
+def stamp(d, blocks, mtime, first=False):
+    """말마다 받은 시각을 entries 에 `at` 으로 단다(11-11 사용자 "언제 받은건지 알수가 없어").
+    문서엔 시각이 없다(세션은 Edit 로 `⇒` 를 쓴다) — 서버가 문서가 바뀔 때마다 새 말을 그 수정 시각으로 `.times` 에 적어 둔다.
+    키 = 질문·누구·글·같은 글 몇 번째. 글을 고치면 새 말로 친다. first(서버 시작) 때 `.times` 가 없는 옛 문서의 말은 '' = 모름."""
+    f = d / ".times"
+    try:
+        old = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        old = None
+    at = "" if old is None and first else datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+    cur, n = {}, collections.Counter()
+    for b in blocks:
+        for e in b.get("entries", ()):
+            k = f"{b.get('id', MEMO)}|{e['who']}|{e['text']}"
+            n[k] += 1
+            key = hashlib.sha1(f"{k}|{n[k]}".encode()).hexdigest()[:12]
+            e["at"] = cur[key] = (old or {}).get(key, at)
+    if cur != old:
+        write(f, json.dumps(cur))
+
+
+_stamped = {}
+
+
+def stamp_all(first=False):
+    """바뀐 문서만 다시 읽어 새 말에 시각을 단다 — chan_loop 가 1.5초마다(세션이 쓴 순간에 가깝게)."""
+    for tid in all_ids():
+        f = BOARD / tid / "task.md"
+        if tid.startswith("txt:") or not f.is_file():
+            continue
+        m = f.stat().st_mtime
+        if _stamped.get(tid) != m:
+            _stamped[tid] = m
+            stamp(f.parent, parse(split(f.read_text(encoding="utf-8", errors="replace"))[1]), m, first)
 
 
 def send(d, items):
@@ -461,6 +536,7 @@ def chan_loop(interval=1.5, away_every=20):
         try:
             p = presence() if n % away_every == 0 else None   # 자리 비움은 분 단위라 30초마다면 된다(gdbus 를 덜 부른다)
             deliver(p if p and p["state"] == "away" else None)
+            stamp_all()
             with _chans_lock:
                 for m in [m for m, c in _chans.items() if c["q"] is None and not pathlib.Path(f"/proc/{c['pid']}").exists()]:
                     del _chans[m]
@@ -740,6 +816,7 @@ def serve():
     global IN_SERVER
     IN_SERVER = True
     BOARD.mkdir(parents=True, exist_ok=True)
+    stamp_all(first=True)
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     threading.Thread(target=chan_loop, daemon=True).start()
     if NOTIFY:
@@ -756,7 +833,7 @@ session: {session}
 status: 진행 중
 ---
 ## 요약
-{summary}
+지금: {summary}
 
 ## 정할 것
 
@@ -777,7 +854,7 @@ def cmd_new(a):
     if (d / "task.md").exists():
         sys.exit(f"이미 있습니다: {d / 'task.md'}")
     d.mkdir(parents=True, exist_ok=True)
-    write(d / "task.md", TEMPLATE.format(title=a.title, session=a.session, summary=a.summary or ""))
+    write(d / "task.md", TEMPLATE.format(title=a.title, session=a.session, summary=a.summary or "막 시작함"))
     claim(d / "task.md")
     print(f"{d / 'task.md'}\n{url(a.task)}\n{wait_hint([a.task])}")
 
@@ -1002,7 +1079,7 @@ def cmd_push(a):
     for t in tids:
         st, td, ts = remote(resolve(t)[1]), resolve(t)[1], summary(t)
         row = {"pc": PC, "task": t, "title": ts["title"], "session": ts["session"], "status": ts["status"],
-               "mine": ts["mine"], "waiting": ts["waiting"], "asks": ts["asks"][:5], "url": (url + "#" + t) if url else "", "updated": time.time(),
+               "mine": ts["mine"], "waiting": ts["waiting"], "asks": ts["asks"][:5], "now": ts["now"], "brief": ts["brief"], "url": (url + "#" + t) if url else "", "updated": time.time(),
                "blocks": detail(t)["blocks"]}   # 목록이 PC 화면처럼 오른쪽에 내용을 그린다(답은 세션 아티팩트에서)
         (td / ".remote").mkdir(exist_ok=True)
         write(td / ".remote" / "row.json", json.dumps(row, ensure_ascii=False))

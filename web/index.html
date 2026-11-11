@@ -64,6 +64,11 @@ aside { border-right: 1px solid var(--line); background: var(--surface); overflo
 .trow .asks { margin: 0; padding: 0 0 0 16px; list-style: none; display: grid; gap: 1px; }
 .trow .asks li { font-size: 12.5px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .trow .asks li.more { color: var(--muted); }
+.trow .now { font-size: 12px; color: var(--muted); padding-left: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trow .asks li { cursor: pointer; } .trow .asks li:hover { text-decoration: underline; }
+.live { font-size: 11.5px; font-weight: 600; color: var(--done); white-space: nowrap; } .live.idle { color: var(--muted); font-weight: 400; }
+.nowline { margin-top: 6px; font-size: 14px; } .nowline b { color: var(--muted); font-weight: 600; margin-right: 6px; }
+.item.flash { box-shadow: 0 0 0 3px var(--me); }
 .trow .when { font-size: 11.5px; color: var(--muted); padding-left: 16px; font-variant-numeric: tabular-nums; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--wait); flex: none; margin-top: 6px; }
 .dot.me { background: var(--me); }
@@ -76,6 +81,7 @@ aside { border-right: 1px solid var(--line); background: var(--surface); overflo
 
 .page { max-width: 1200px; margin: 0 auto; padding: 20px 16px 80px; }
 .top { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+.top > div:first-child { flex: 1 1 400px; min-width: 0; }
 h1 { font-size: 22px; line-height: 1.35; margin: 4px 0 6px; text-wrap: balance; }
 .meta { color: var(--muted); font-size: 13px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .actions { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -105,7 +111,8 @@ h1 { font-size: 22px; line-height: 1.35; margin: 4px 0 6px; text-wrap: balance; 
 .item .qt { font-weight: 650; flex: 1; }
 .item .body { padding: 4px 16px 0; }
 .thread { display: grid; gap: 8px; padding: 8px 16px 0; }
-.say { display: grid; grid-template-columns: 44px 1fr; gap: 8px; }
+.say { display: grid; grid-template-columns: 48px 1fr; gap: 8px; }
+.say .at { display: block; font-size: 11px; font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; line-height: 1.3; margin-top: 2px; }
 .say .who { font-size: 12px; font-weight: 700; color: var(--muted); padding-top: 3px; }
 .say .txt { border-radius: 8px; padding: 6px 10px; background: var(--sunk); }
 .say.me .txt { background: var(--mine-bubble); }
@@ -202,7 +209,7 @@ async function relay(tid, item, text, send) {
   }
   const d = R.details[tid];   // 다시 올라오기 전까지 내 말을 바로 보이게
   const b = d && d.blocks.find(b => (b.type === 'item' && b.id === item) || (b.type === 'memo' && item === '메모'));
-  if (b) { b.entries.push({ who: 'me', text }); if (b.turn) b.turn = 'claude'; }
+  if (b) { const t = new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString(); b.entries.push({ who: 'me', text, at: t.slice(0, 10) + ' ' + t.slice(11, 16) }); if (b.turn) b.turn = 'claude'; }
   return d;
 }
 async function remoteApi(path, body) {
@@ -263,13 +270,14 @@ function taskRow(t) {
   const on = (view === 'task' || view === 'raw') && cur && cur.id === t.id;
   const asks = (t.asks || []).slice(0, 3);
   const more = (t.asks || []).length - asks.length;
-  const b = h('button', { type: 'button', className: 'trow' + (on ? ' on' : ''), title: t.title },
+  const b = h('button', { type: 'button', className: 'trow' + (on ? ' on' : ''), title: t.brief ? t.title + '\n\n' + t.brief : t.title },
     h('div', { className: 'top' }, h('span', { className: 'dot ' + (t.kind === 'txt' ? 'txt' : t.mine ? 'me' : '') }),
       h('span', { className: 'tt', textContent: t.title }), t.mine ? h('span', { className: 'count', textContent: t.mine }) : null),
-    asks.length ? h('ul', { className: 'asks' }, asks.map(q => h('li', { textContent: q, title: q })),
+    t.now ? h('div', { className: 'now', textContent: '지금: ' + t.now }) : null,
+    asks.length ? h('ul', { className: 'asks' }, asks.map(q => h('li', { textContent: q, title: q + ' — 누르면 이 질문으로', onclick: e => { e.stopPropagation(); open(t.id, false, q.split('.')[0]); } })),
       more > 0 ? h('li', { className: 'more', textContent: `외 ${more}개` }) : null) : null,
     h('div', { className: 'when', textContent: when(t.mtime) + (t.unread && !t.listening ? ' · ⚠ 보냈는데 세션이 안 듣는 중' : t.mine ? '' : t.waiting ? ' · 세션이 반영 중' : ' · 내 차례 없음') }));
-  b.onclick = () => open(t.id);
+  b.onclick = () => open(t.id, false, t.mine && asks.length ? asks[0].split('.')[0] : null);   // 내 차례면 그 질문으로 바로
   return b;
 }
 function grpHead(key, name, n, mine, isOpen, cls) {
@@ -299,6 +307,7 @@ function renderTabs() {
     const isOpen = folded[g.key] === undefined ? g.mine > 0 : !folded[g.key];
     const head = h('button', { type: 'button', className: 'grp-head', ariaExpanded: String(isOpen), title: g.key },
       h('span', { className: 'chev', textContent: '▸' }), h('span', { className: 'name', textContent: g.name }),
+      liveTag(g.items.map(t => t.live).find(Boolean)),
       h('span', { className: 'n', textContent: g.items.length > 1 ? `작업 ${g.items.length}` : '' }),
       g.mine ? h('span', { className: 'count', textContent: g.mine }) : null);
     head.setAttribute('aria-expanded', String(isOpen));
@@ -329,7 +338,10 @@ async function refreshList() {
 }
 document.addEventListener('focusout', e => { if (stale && e.target.tagName === 'TEXTAREA' && view === 'task') { stale = false; setTimeout(() => open(cur.id, true), 0); } });
 
-async function open(id, keepScroll) {
+function liveTag(s) {   // 세션이 지금 일하는 중인지 — PC 화면만(아티팩트는 찍어 둔 때라 틀린다)
+  return R || !s ? null : h('span', { className: 'live ' + s, textContent: s === 'idle' ? '쉬는 중' : '● 일하는 중' });
+}
+async function open(id, keepScroll, jump) {
   const y = $('#main').scrollTop;
   const prev = cur && cur.id;
   try { cur = await api('/api/task?id=' + encodeURIComponent(id)); } catch (e) { $('#page').replaceChildren(h('p', { className: 'empty', textContent: '없는 작업입니다.' })); return; }
@@ -338,6 +350,8 @@ async function open(id, keepScroll) {
   if (location.hash.slice(1) !== encodeURIComponent(id)) history.replaceState(null, '', '#' + encodeURIComponent(id));
   renderTabs(); renderTask();
   $('#main').scrollTop = keepScroll ? y : 0;
+  const q = jump && document.getElementById('q-' + jump);
+  if (q) { q.scrollIntoView({ block: 'start' }); q.classList.add('flash'); setTimeout(() => q.classList.remove('flash'), 1500); }
 }
 
 function saveRow(onSave, onSend, hint, msg) {
@@ -407,7 +421,7 @@ function editor(key, value, tid, placeholder, onSave, onSend) {
 
 function thread(entries, tid) {
   return h('div', { className: 'thread' }, entries.map(e =>
-    h('div', { className: 'say ' + e.who }, h('div', { className: 'who', textContent: e.who === 'me' ? '나' : '세션' }), h('div', { className: 'txt' }, md(e.text, tid)))));
+    h('div', { className: 'say ' + e.who }, h('div', { className: 'who' }, e.who === 'me' ? '나' : '세션', e.at ? h('span', { className: 'at', textContent: e.at.slice(5) }) : null), h('div', { className: 'txt' }, md(e.text, tid)))));
 }
 function answerLink() {   // 목록에서 답하면 목록을 올린 세션이 깬다(=중계) — 답은 그 작업 세션이 올린 작업 아티팩트에서
   return cur && cur.url ? h('a', { className: 'answer-link', href: cur.url, target: '_blank', rel: 'noopener', textContent: '답하기 — 이 작업 아티팩트 열기 ↗' })
@@ -435,7 +449,8 @@ function renderTask() {
     h('div', {}, h('h1', { textContent: t.title }),
       h('div', { className: 'meta' },
         h('span', { className: 'pill ' + (doneNow ? 'done' : t.mine ? 'me' : 'claude'), textContent: doneNow ? '끝' : t.mine ? `내 차례 ${t.mine}` : t.kind === 'txt' ? 'txt 문서' : '세션 차례' }),
-        h('span', { textContent: t.session }), h('span', { textContent: when(t.mtime) + ' 갱신' }))),
+        h('span', { textContent: t.session }), liveTag(t.live), h('span', { textContent: when(t.mtime) + ' 갱신' })),
+      t.now && !doneNow ? h('div', { className: 'nowline' }, h('b', { textContent: '지금' }), t.now) : null),
     h('div', { className: 'actions' }, ...(t.kind === 'task' && !R ? [
       h('button', { type: 'button', textContent: '원문 편집', onclick: () => renderRaw() }),
       h('button', { type: 'button', textContent: doneNow ? '다시 진행' : '끝으로', onclick: async () => { cur = await api('/api/status', { id: t.id, done: !doneNow }); await refreshList(); renderTask(); } }),
