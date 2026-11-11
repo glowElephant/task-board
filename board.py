@@ -5,7 +5,7 @@
 그 자리에 고쳐 넣을 뿐 상태를 따로 갖지 않는다. 사용자가 [보내기]를 누르면 <작업>/.sent 가 바뀌고,
 서버가 그 작업 세션에 채널(이 서버의 /mcp)로 바로 넣는다. 채널 없이 띄운 세션은 `board wait` 로 기다린다.
 
-  board serve                               화면 서버 (127.0.0.1:BOARD_PORT) + 채널 MCP(/mcp)
+  board serve                               화면 서버 (127.0.0.1:BOARD_PORT, 암호를 걸면 다른 PC 도) + 채널 MCP(/mcp)
   board new <작업> --title T --session S    작업 문서 만들기 — 마지막 줄이 board wait 를 걸지 말지 알려 준다
   board wait <작업>... [--max 분]           (채널 없는 세션만) [보내기]까지 대기 — Bash run_in_background 로 건다
                                             exit 0 = 보냄(읽고 반영) · 3 = 시간 초과(다시 건다) · 4 = 사용자 자리 비움(폰 푸시 후 다시 건다)
@@ -16,13 +16,16 @@
 
 설정: 환경변수 > ~/.config/board/env (KEY=VALUE). BOARD_DIR(기본 ~/board) · BOARD_PORT(기본 8770) ·
 BOARD_EXTRA(옛 txt 문서 폴더, os.pathsep 로 여럿 — 탭으로 보여 주기만 한다) ·
-BOARD_NOTIFY(0 이면 PC 알림 끔) · BOARD_AWAY_MIN(입력 없이 몇 분이면 자리 비움, 기본 30).
+BOARD_NOTIFY(0 이면 PC 알림 끔) · BOARD_AWAY_MIN(입력 없이 몇 분이면 자리 비움, 기본 30) ·
+BOARD_PASSWORD(걸면 다른 PC 에서도 <이 PC IP>:BOARD_PORT 로 연다 — 암호를 넣어야 보인다. 없으면 127.0.0.1 만).
 """
 import argparse
 import base64
 import collections
 import datetime
 import hashlib
+import hmac
+import http.cookies
 import http.server
 import json
 import mimetypes
@@ -63,6 +66,16 @@ AWAY_MIN = float(CFG.get("BOARD_AWAY_MIN") or 30)
 WEB = pathlib.Path(__file__).resolve().parent / "web"
 HUB = CFG.get("BOARD_HUB", "")              # 목록 아티팩트 주소 — 비면 아티팩트로 안 내보낸다
 PC = CFG.get("BOARD_PC") or socket.gethostname()
+PASSWORD = CFG.get("BOARD_PASSWORD", "")    # 다른 PC 에서 볼 때 암호 — 비면 이 PC 에서만 열린다
+PASS_COOKIE = hashlib.sha256(("board:" + PASSWORD).encode()).hexdigest() if PASSWORD else ""
+_fails = {}                                 # 다른 PC IP → (틀린 횟수, 막힌 끝 시각) — 5번 틀리면 10분
+LOGIN = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Task Board</title><style>body{font:16px system-ui,sans-serif;background:#f4f5f7;color:#222;display:grid;place-items:center;height:100vh;margin:0}
+form{background:#fff;padding:28px;border-radius:10px;box-shadow:0 2px 12px #0002;display:grid;gap:12px;width:min(300px,85vw)}
+input,button{font:inherit;padding:10px;border-radius:6px;border:1px solid #ccc}button{background:#2d6cdf;color:#fff;border:0}
+p{margin:0;color:#c33;font-size:14px}</style>
+<form method="post" action="/login"><b>Task Board</b><input type="password" name="pw" placeholder="암호" autofocus>
+<p><!--e--></p><button>열기</button></form>"""
 
 FM = re.compile(r"\A---\n(.*?)\n---\n?", re.S)
 ITEM = re.compile(r"^###\s*\[([ ~vV])\]\s*([^\s.]+)\.?\s*(.*)$")
@@ -561,6 +574,41 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def gate(self, path):
+        """이 PC 는 그대로. 다른 PC 는 암호 쿠키가 있어야 하고, 채널(/mcp)은 끝까지 이 PC 세션만 —
+        [보내기]가 세션에 '사용자 말'로 들어가므로 같은 망의 아무나 세션을 부리게 두면 안 된다."""
+        if self.client_address[0].startswith("127."):
+            return True
+        if path in ("/mcp", "/api/channels"):
+            self.reply({"error": "이 PC 에서만"}, code=403)
+            return False
+        c = http.cookies.SimpleCookie()
+        try:
+            c.load(self.headers.get("Cookie") or "")
+        except http.cookies.CookieError:
+            pass
+        if PASS_COOKIE and "board" in c and hmac.compare_digest(c["board"].value, PASS_COOKIE):
+            return True
+        if path in ("/", "/index.html"):
+            self.reply(LOGIN.encode(), "text/html; charset=utf-8")
+        else:
+            self.reply({"error": "암호가 필요합니다 — 화면을 새로고침해 주세요"}, code=401)
+        return False
+
+    def login(self, raw):
+        ip = self.client_address[0]
+        n, until = _fails.get(ip, (0, 0))
+        page = lambda msg, code: self.reply(LOGIN.replace("<!--e-->", msg).encode(), "text/html; charset=utf-8", code=code)
+        if time.time() < until:
+            return page("여러 번 틀려 10분 동안 막혔습니다", 429)
+        pw = dict(urllib.parse.parse_qsl(raw.decode(errors="replace"))).get("pw", "")
+        if PASSWORD and hmac.compare_digest(pw.encode(), PASSWORD.encode()):
+            _fails.pop(ip, None)
+            return self.reply(b"", code=303, headers={
+                "Location": "/", "Set-Cookie": f"board={PASS_COOKIE}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000"})
+        _fails[ip] = (0, time.time() + 600) if n + 1 >= 5 else (n + 1, 0)
+        return page("암호가 틀렸습니다", 401)
+
     def mcp_post(self, raw):
         """board MCP — 도구 없이 채널만. 처음 붙을 때 Claude Code 가 X-Board-Pid(board channel-headers)로 자기 pid 를 알린다."""
         msg = json.loads(raw or b"{}")
@@ -625,6 +673,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     _chans[sid]["q"] = None
 
     def do_DELETE(self):
+        if not self.gate("/mcp"):
+            return
         with _chans_lock:
             _chans.pop(self.headers.get("Mcp-Session-Id", ""), None)
         self.reply(b"", code=200)
@@ -632,6 +682,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
         q = dict(urllib.parse.parse_qsl(u.query))
+        if not self.gate(u.path):
+            return
         try:
             if u.path == "/mcp":
                 return self.mcp_stream()
@@ -659,7 +711,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         u = urllib.parse.urlparse(self.path)
         q = dict(urllib.parse.parse_qsl(u.query))
-        raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        n = int(self.headers.get("Content-Length") or 0)
+        if u.path == "/login":
+            return self.login(self.rfile.read(min(n, 4096)))
+        if not self.gate(u.path):
+            return
+        raw = self.rfile.read(n)
         try:
             if u.path == "/mcp":
                 return self.mcp_post(raw)
@@ -817,11 +874,12 @@ def serve():
     IN_SERVER = True
     BOARD.mkdir(parents=True, exist_ok=True)
     stamp_all(first=True)
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    srv = http.server.ThreadingHTTPServer(("0.0.0.0" if PASSWORD else "127.0.0.1", PORT), Handler)
     threading.Thread(target=chan_loop, daemon=True).start()
     if NOTIFY:
         threading.Thread(target=notify_loop, daemon=True).start()
-    print(f"Task Board: http://localhost:{PORT}  (문서 {BOARD})", flush=True)
+    print(f"Task Board: http://localhost:{PORT}  (문서 {BOARD})"
+          + (f" · 다른 PC 는 http://<이 PC IP>:{PORT} (암호)" if PASSWORD else ""), flush=True)
     srv.serve_forever()
 
 

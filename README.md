@@ -22,7 +22,7 @@ claude plugin install task-board@task-board
 
 - 리눅스(systemd)면 PC 화면 http://localhost:8770 이 사용자 서비스로 뜬다. 맥·윈도우는 아티팩트만(PC 화면은 수동 `python3 board.py serve`).
 - 플러그인 없이 쓰려면 `git clone` 뒤 `bash install.sh`(스킬 링크 + 전역 CLAUDE.md 규칙 + setup). 둘 다 하지 말 것 — 규칙이 두 번 들어간다.
-- 설정 `~/.config/board/env`: `BOARD_DIR`, `BOARD_PORT`, `BOARD_HUB`(목록 아티팩트), `BOARD_PC`(기본 hostname), `BOARD_AWAY_MIN`.
+- 설정 `~/.config/board/env`: `BOARD_DIR`, `BOARD_PORT`, `BOARD_HUB`(목록 아티팩트), `BOARD_PC`(기본 hostname), `BOARD_AWAY_MIN`, `BOARD_PASSWORD`(걸면 다른 PC 에서 `http://<이 PC IP>:8770` 으로 암호 넣고 본다 — 없으면 이 PC 에서만).
 
 **[보내기]를 바로 받기(채널, 리눅스)** — `board setup` 이 MCP `board` 를 등록한다. 세션을 `claude --dangerously-load-development-channels server:board` 로 띄우면
 세션이 아무것도 걸어 두지 않아도 [보내기] 때 깨어난다(Claude Code Channels, 연구 미리보기 — 띄울 때마다 경고 창 한 번).

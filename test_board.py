@@ -135,4 +135,18 @@ assert _at[("Q1", "ㅇㅋ")] == "2026-11-11 09:05" and _at[("Q2", "첫 답")] ==
 _sd2 = _p.Path(tempfile.mkdtemp()); _b = blocks(board.add_answer(DOC, "Q1", "새 작업 말"))
 board.stamp(_sd2, _b, _t.mktime((2026, 11, 11, 9, 6, 0, 0, 0, -1)))   # 서버가 떠 있을 때 생긴 문서는 처음부터 시각
 assert [e["at"] for b in _b if b.get("id") == "Q1" for e in b["entries"]] == ["2026-11-11 09:06"]
+# 다른 PC: 암호 쿠키 없으면 화면 대신 로그인, API 401, 채널은 쿠키가 있어도 403. 이 PC(127.*)는 그대로
+board.PASSWORD, board.PASS_COOKIE = "pw", "c0ffee"
+def _gate(ip, path, cookie=""):
+    h = board.Handler.__new__(board.Handler)
+    h.client_address, h.headers, out = (ip, 1), {"Cookie": cookie}, []
+    h.reply = lambda body, ctype=None, code=200, headers=None: out.append(code)
+    return h.gate(path), out
+assert _gate("127.0.0.1", "/mcp") == (True, [])
+assert _gate("192.168.60.9", "/") == (False, [200])
+assert _gate("192.168.60.9", "/api/tasks", "board=nope") == (False, [401])
+assert _gate("192.168.60.9", "/api/tasks", "board=c0ffee") == (True, [])
+assert _gate("192.168.60.9", "/mcp", "board=c0ffee") == (False, [403])
+board.PASSWORD = board.PASS_COOKIE = ""
+assert _gate("192.168.60.9", "/api/tasks", "board=") == (False, [401])
 print("ok")
