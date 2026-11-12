@@ -180,4 +180,10 @@ _w("new", {"five_hour": _win(9000, 5)}); assert board.usage()["five_hour"]["used
 for _f in board.USAGE.glob("*.json"): _f.unlink()
 _w("ultra", {"seven_day": _win(9e4, 24)}); _w("stale5", {"five_hour": _win(-60, 70)})
 assert list(board.usage()) == ["seven_day"], board.usage()
+# 검색: 끝난 작업까지, 본문(답)에서도, 낱말 모두(AND)·대소문자 무시, 숨김(local) 빠짐, 미리보기는 걸린 줄에서 머리표 뗀 것
+(board.BOARD / "찾기끝").mkdir(); (board.BOARD / "찾기끝" / "task.md").write_text("---\ntitle: 키 바꾸기\nstatus: 끝\n---\n## 메모\n-> Keystore 비번은 어디?\n")
+(board.BOARD / "찾기숨김").mkdir(); (board.BOARD / "찾기숨김" / "task.md").write_text("---\ntitle: 숨김\nstatus: 진행 중\n---\nkeystore 비번\n")
+_r = board.search("KEYSTORE 비번", hide=lambda tid: tid == "찾기숨김")
+assert [x["id"] for x in _r] == ["찾기끝"] and _r[0]["snippet"] == "Keystore 비번은 어디?", _r
+assert board.search("keystore 없는말") == [] and board.search("  ") == []
 print("ok")

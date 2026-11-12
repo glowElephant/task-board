@@ -47,6 +47,14 @@ aside { border-right: 1px solid var(--line); background: var(--surface); overflo
   padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .brand { font-weight: 700; letter-spacing: .02em; }
 .side-head .sub { color: var(--muted); font-size: 12px; margin-left: auto; }
+.side-head { flex-wrap: wrap; }
+#q { flex-basis: 100%; font: 14px var(--sans); color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+#q:focus { border-color: var(--focus); outline: none; }
+.hits-head { padding: 10px 16px 4px; font-size: 12px; color: var(--muted); }
+.trow .snip { font-size: 12.5px; color: var(--muted); padding-left: 16px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.trow mark { background: color-mix(in srgb, var(--me) 22%, transparent); color: inherit; border-radius: 2px; }
+.trow .st { font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 999px; background: var(--wait-soft); color: var(--wait); white-space: nowrap; }
+.trow .st.open { background: var(--me-soft); color: var(--me); }
 .grp { border-bottom: 1px solid var(--line); }
 .grp-head { width: 100%; border: 0; border-radius: 0; background: none; display: flex; align-items: center; gap: 8px;
   padding: 9px 14px; font-weight: 650; text-align: left; }
@@ -96,7 +104,8 @@ select:focus, input[type=text]:focus { border-color: var(--focus); outline: none
 /* 폰: 목록 화면과 작업 화면을 하나씩(.app.task = 작업 화면). 글 칸 16px 은 iOS 가 확대하지 않게 */
 @media (max-width: 860px) {
   .app { display: block; height: auto; }
-  aside { border-right: 0; min-height: 100dvh; overflow: visible; }
+  aside { border-right: 0; min-height: calc(100dvh - 40px); overflow: visible; }   /* 40px = 하단 사용량 줄 — 목록이 짧아도 아래 단추를 안 가리게 */
+  #q { font-size: 16px; }
   .app.task aside, .app:not(.task) #main { display: none; }
   #main { overflow: visible; }
   #usage { position: sticky; bottom: 0; z-index: 3; padding: 6px 12px; }
@@ -177,7 +186,8 @@ details.reopen > summary { color: var(--muted); font-size: 13px; cursor: pointer
 <div class="app">
   <aside aria-label="세션별 작업">
     <div class="side-head"><span class="brand">Task Board</span><span id="total"></span><span class="sub" id="sub"></span>
-      <button id="newBtn" type="button" class="primary" title="세션을 골라 새 작업을 맡깁니다 — 그 세션이 바로 깨어나 시작합니다">＋ 새 작업</button></div>
+      <button id="newBtn" type="button" class="primary" title="세션을 골라 새 작업을 맡깁니다 — 그 세션이 바로 깨어나 시작합니다">＋ 새 작업</button>
+      <input id="q" type="search" placeholder="검색 — 끝난 작업까지, 답·메모 포함" aria-label="작업 검색" autocomplete="off"></div>
     <div id="groups"></div>
     <div class="side-foot"><button id="doneBtn" type="button">끝난 작업</button>
       <button id="outBtn" type="button" title="폰을 잃어버렸을 때 — 로그인해 둔 기기 전부 다시 슬랙 코드를 받아야 합니다">모든 기기 로그아웃</button></div>
@@ -274,9 +284,42 @@ function taskRow(t) {
   b.onclick = () => go(t.id, t.mine && asks.length ? asks[0].split('.')[0] : null);   // 내 차례면 그 질문으로 바로
   return b;
 }
+// 검색: 문서 전체(답·메모까지)를 서버가 찾고, 결과가 있는 동안 왼쪽 목록 자리에 보인다. 끝난 작업도 같이(11-12 사용자)
+let query = '', hits = null, seq = 0;
+function hl(text) {   // 찾은 낱말에 형광 — DOM 으로만 만든다(문서 글을 HTML 로 넣지 않음)
+  const ts = query.split(/\s+/).filter(Boolean).map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (!ts.length || !text) return [text || ''];
+  return text.split(new RegExp(`(${ts.join('|')})`, 'gi')).map((p, i) => i % 2 ? h('mark', { textContent: p }) : p);
+}
+function renderHits(box) {
+  const by = new Map(tasks.map(t => [t.id, t])), rows = (hits || []).map(x => [x, by.get(x.id)]).filter(([, t]) => t);
+  box.append(h('div', { className: 'hits-head', textContent: hits === null ? '찾는 중…' : rows.length ? `${rows.length}개 — 최근 고친 순` : '찾은 작업이 없습니다' }),
+    h('div', { className: 'grp-body' }, rows.map(([x, t]) => {
+      const on = view === 'task' && cur && cur.id === t.id, done = t.status === '끝';
+      const b = h('button', { type: 'button', className: 'trow' + (on ? ' on' : ''), title: t.title },
+        h('div', { className: 'top' }, h('span', { className: 'dot' + (t.mine && !done ? ' me' : '') }), h('span', { className: 'tt' }, hl(t.title)),
+          h('span', { className: 'st' + (done ? '' : ' open'), textContent: done ? '끝' : '진행 중' })),
+        x.snippet ? h('div', { className: 'snip' }, hl(x.snippet)) : null,
+        h('div', { className: 'when', textContent: when(t.mtime) + ' · ' + shortSession(t.session) }));
+      b.onclick = () => go(t.id);
+      return b;
+    })));
+}
+async function runSearch() {
+  const q = query, n = ++seq;
+  if (!q.trim()) { hits = null; return renderTabs(); }
+  let r; try { r = await api('/api/search?q=' + encodeURIComponent(q)); } catch { return; }
+  if (n !== seq) return;   // 더 늦게 친 글자의 결과가 먼저 왔으면 버린다
+  hits = r; renderTabs();
+}
+let qTimer;
+$('#q').addEventListener('input', e => { query = e.target.value; hits = null; clearTimeout(qTimer); qTimer = setTimeout(runSearch, 200); if (!query.trim()) runSearch(); });
+$('#q').addEventListener('keydown', e => { if (e.key === 'Escape') { e.target.value = query = ''; runSearch(); } });
+
 function renderTabs() {
   const box = $('#groups'); box.replaceChildren();
-  for (const g of groups()) {
+  if (query.trim()) renderHits(box);
+  else for (const g of groups()) {
     const isOpen = folded[g.key] === undefined ? g.mine > 0 : !folded[g.key];
     const head = h('button', { type: 'button', className: 'grp-head', ariaExpanded: String(isOpen), title: g.key },
       h('span', { className: 'chev', textContent: '▸' }), h('span', { className: 'name', textContent: g.name }),

@@ -363,6 +363,28 @@ def all_ids():
     return ids
 
 
+def search(q, hide=lambda tid: False):
+    """문서 전체(제목·요약·질문·답·메모)에서 찾기 — 끝난 작업까지(11-12 사용자 "검색기능 … 끝난작업까지 포함해서").
+    빈칸으로 나눈 낱말이 모두 들어 있는 작업만, 대소문자 무시. 본문에서 처음 걸린 줄을 미리보기로 준다. 최근 고친 순."""
+    terms = [t.lower() for t in q.split()][:8]
+    out = []
+    for tid in all_ids() if terms else []:
+        try:
+            f, _ = resolve(tid)
+            text = f.read_text(encoding="utf-8", errors="replace")
+            if not all(t in text.lower() for t in terms) or hide(tid):
+                continue
+        except (KeyError, OSError):
+            continue
+        body = text if tid.startswith("txt:") else split(text)[1]
+        line = next((ln for ln in body.splitlines() if any(t in ln.lower() for t in terms)), "")
+        line = re.sub(r"^\s*(?:-> |⇒ |#+\s*(?:\[[ ~v]\]\s*)?|[-*]\s+)", "", line).strip()
+        i = min((line.lower().find(t) for t in terms if t in line.lower()), default=0)
+        snip = line[max(0, i - 40):i + 100]
+        out.append({"id": tid, "snippet": ("…" if i > 40 else "") + snip + ("…" if i + 100 < len(line) else ""), "mtime": f.stat().st_mtime})
+    return sorted(out, key=lambda x: -x["mtime"])
+
+
 def detail(tid):
     f, d = resolve(tid)
     text = f.read_text(encoding="utf-8", errors="replace")
@@ -956,6 +978,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     if ss.get("sessionId") and ss["sessionId"] not in out:
                         out[ss["sessionId"]] = {"sid": ss["sessionId"], "name": ss.get("name", ""), "live": lv.get(ss["sessionId"])}
                 return self.reply(sorted(out.values(), key=lambda x: x["name"]))
+            if u.path == "/api/search":
+                return self.reply(search(q.get("q", ""), self.hidden))
             if u.path == "/api/usage":
                 return self.reply(usage())
             if u.path == "/api/tasks":
