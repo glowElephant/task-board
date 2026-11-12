@@ -167,13 +167,17 @@ for _n, _sid, _now, _st, _q in [("멈1", "s1", "남은 건 5분 실행(사용자
     (board.BOARD / _n / "task.md").write_text(f"---\ntitle: {_n}\nsid: {_sid}\nstatus: {_st}\n---\n## 요약\n지금: {_now}\n\n## 정할 것\n### {_q} Q1. 할까?\n")
 _s = {n: board.summary(n) for n in ["멈1", "멈2", "일", "기", "질", "끝"]}
 assert [n for n, s in _s.items() if s["stuck"]] == ["멈1", "멈2"] and _s["멈1"]["mine"] == 1 and _s["질"]["mine"] == 1, _s
-# 한도 사용량: 같은 창이면 최댓값(쉬던 세션의 옛 값에 안 덮임), 새 창이면 새 값, 깨진 파일·빈 값은 무시
-board.USAGE = _p.Path(tempfile.mkdtemp())
-_w = lambda n, r5, p5, r7=2000, p7=10: (board.USAGE / f"{n}.json").write_text(json.dumps(
-    {"five_hour": {"resets_at": r5, "used_percentage": p5}, "seven_day": {"resets_at": r7, "used_percentage": p7}}))
-_w("old", 1000, 90); _w("busy", 1030, 40, p7=30); _w("idle", 1000, 20)
+# 한도 사용량: 같은 창이면 최댓값(쉬던 세션의 옛 값에 안 덮임), 새 창이면 새 값, 지난 창·없는 창(울트라 5시간)·깨진 파일은 빠짐
+board.USAGE = _p.Path(tempfile.mkdtemp()); _T = _t.time()
+_w = lambda n, d: (board.USAGE / f"{n}.json").write_text(json.dumps(d))
+_win = lambda r, p: {"resets_at": _T + r, "used_percentage": p}
+_w("old", {"five_hour": _win(1000, 90), "seven_day": _win(9e4, 10)}); _w("busy", {"five_hour": _win(1030, 40), "seven_day": _win(9e4, 30)})
+_w("idle", {"five_hour": _win(1000, 20)}); _w("gone", {"seven_day": _win(-5, 99)})
 (board.USAGE / "bad.json").write_text("{"); (board.USAGE / "none.json").write_text('{"five_hour": {}}')
 _u = board.usage()
 assert _u["five_hour"]["used_percentage"] == 90 and _u["seven_day"]["used_percentage"] == 30, _u
-_w("new", 9000, 5); assert board.usage()["five_hour"]["used_percentage"] == 5
+_w("new", {"five_hour": _win(9000, 5)}); assert board.usage()["five_hour"]["used_percentage"] == 5
+for _f in board.USAGE.glob("*.json"): _f.unlink()
+_w("ultra", {"seven_day": _win(9e4, 24)}); _w("stale5", {"five_hour": _win(-60, 70)})
+assert list(board.usage()) == ["seven_day"], board.usage()
 print("ok")

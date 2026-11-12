@@ -746,7 +746,9 @@ def usage():
         for k in ("five_hour", "seven_day"):
             try:
                 r, pct = float(d[k]["resets_at"]), float(d[k]["used_percentage"])
-            except (KeyError, TypeError, ValueError):
+            except (KeyError, TypeError, ValueError):   # 그 창이 없는 요금제(울트라는 5시간 창이 없다)·빈 값
+                continue
+            if r <= now:   # 지난 창의 옛 값 — 새 값이 올 때까지 안 보인다('초기화됨'이 남아 있지 않게)
                 continue
             b = best.get(k)
             if b is None or r > b["resets_at"] + 60 or (abs(r - b["resets_at"]) <= 60 and pct > b["used_percentage"]):
