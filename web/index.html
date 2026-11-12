@@ -6,6 +6,7 @@
 <title>Task Board</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
 <style>
 :root {
   --bg: #f4f5f7; --surface: #ffffff; --sunk: #eef0f3; --ink: #1c2230; --muted: #667085; --line: #dfe3e8;
@@ -188,7 +189,9 @@ marked.use({ tokenizer: { del(src) {
   if (m) return { type: 'del', raw: m[0], text: m[1], tokens: this.lexer.inlineTokens(m[1]) };
   if (src[0] === '~') return { type: 'text', raw: '~', text: '~' };
 } } });
-mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'neutral', securityLevel: 'loose' });
+// 문서 글은 세션이 바깥(이슈·웹)에서 옮겨 온 것일 수 있다 — 거르지 않으면 그 안의 스크립트가 이 화면에서 돌며 [보내기]로 세션 15곳에
+// '사용자 말'을 넣을 수 있다(11-12 점검). 그래서 HTML 은 DOMPurify 로 거르고 mermaid 는 strict.
+mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'neutral', securityLevel: 'strict' });
 
 let tasks = [], cur = null, view = 'task', drafts = {}, stale = false;
 // 폰(좁은 화면)은 목록과 작업을 한 화면씩 — 작업을 누르면 기록을 하나 쌓아 뒤로 가기(제스처)가 목록으로 온다
@@ -216,7 +219,7 @@ const shortSession = s => (s || '').replace(/\s*\[[0-9a-f]+\]$/, '');
 
 function md(text, tid) {
   const box = h('div', { className: 'md' });
-  box.innerHTML = marked.parse(text || '');
+  box.innerHTML = DOMPurify.sanitize(marked.parse(text || ''));
   box.querySelectorAll('img').forEach(img => {
     const src = img.getAttribute('src') || '';
     if (/^(https?:|data:|\/)/.test(src)) return;
@@ -288,8 +291,18 @@ function renderTabs() {
 function keepDrafts() { if (cur) store.set('board.drafts.' + cur.id, drafts); }
 function sorted() { return groups().flatMap(g => g.items); }
 
-async function refreshList() {
-  try { tasks = await api('/api/tasks'); } catch { return; }
+// 2초마다 목록을 통째로 다시 그리면 누르는 사이에 단추가 바뀌어 클릭이 사라졌다(11-12 사용자 "아무것도 클릭 안 될 때").
+// 그래서 바뀐 게 있을 때만, 마우스·손가락을 누르고 있지 않을 때만 다시 그린다.
+let pressing = false, lastJson = '';
+addEventListener('pointerdown', () => { pressing = true; }, true);
+addEventListener('pointerup', () => { pressing = false; }, true);
+addEventListener('pointercancel', () => { pressing = false; }, true);
+async function refreshList(force) {
+  let j;
+  try { j = await api('/api/tasks'); } catch { return; }
+  const s = JSON.stringify(j);
+  if (!force && (pressing || s === lastJson)) return;
+  lastJson = s; tasks = j;
   renderTabs();
   if (view !== 'task' || !cur) return;
   const t = tasks.find(t => t.id === cur.id);
@@ -363,7 +376,7 @@ function editor(key, value, tid, placeholder, onSave, onSend) {
   ta.addEventListener('input', () => { drafts[key] = ta.value; keepDrafts(); if (tid) prev.replaceChildren(...thumbs(ta.value, tid).childNodes); });
   const upload = tid ? attachPaste(ta, tid) : null;
   const stamp = () => new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
-  const done = (fn, msg) => async () => { cur = await fn(ta.value); delete drafts[key]; keepDrafts(); okMsg[key] = `${msg} ${stamp()}`; await refreshList(); renderTask(); };
+  const done = (fn, msg) => async () => { cur = await fn(ta.value); delete drafts[key]; keepDrafts(); okMsg[key] = `${msg} ${stamp()}`; await refreshList(true); renderTask(); };
   const r = saveRow(done(onSave, '저장됨 — 대화에 올렸습니다'), onSend && done(onSend, '보냄 — 세션이 읽고 반영합니다'),
     tid ? (coarse ? '저장 = 여기에만 · 보내기 = 세션이 읽고 반영' : '저장 = 여기에만 · 보내기 = 세션이 읽고 반영 · 이미지 Ctrl+V · Ctrl+Enter 보내기') : '', okMsg[key]);
   ta.addEventListener('keydown', e => {
@@ -410,9 +423,9 @@ function renderTask() {
     h('div', { className: 'actions' }, ...(t.kind === 'task' ? [
       doneNow ? null : h('button', { type: 'button', className: 'bell' + (t.bell ? ' on' : ''), textContent: t.bell ? '🔔 끝나면 알림 켜짐' : '🔔 끝나면 알림',
         title: t.bell ? '누르면 끕니다' : '이 작업이 끝으로 바뀌면 슬랙 DM 으로 한 번 알립니다',
-        onclick: async () => { cur = await api('/api/bell', { id: t.id, on: !t.bell }); await refreshList(); renderTask(); } }),
+        onclick: async () => { cur = await api('/api/bell', { id: t.id, on: !t.bell }); await refreshList(true); renderTask(); } }),
       coarse ? null : h('button', { type: 'button', textContent: '원문 편집', onclick: () => renderRaw() }),
-      h('button', { type: 'button', textContent: doneNow ? '다시 진행' : '끝으로', onclick: async () => { cur = await api('/api/status', { id: t.id, done: !doneNow }); await refreshList(); renderTask(); } }),
+      h('button', { type: 'button', textContent: doneNow ? '다시 진행' : '끝으로', onclick: async () => { cur = await api('/api/status', { id: t.id, done: !doneNow }); await refreshList(true); renderTask(); } }),
     ] : [])));
   const out = [head];
   if (t.kind === 'task' && !doneNow && !t.listening)
@@ -444,7 +457,7 @@ function rawEditor(t) {
   const ta = h('textarea', { className: 'raw', value: drafts.raw ?? t.raw, spellcheck: false });
   ta.addEventListener('input', () => { drafts.raw = ta.value; keepDrafts(); });
   const r = saveRow(async () => {
-    cur = await api('/api/raw', { id: t.id, text: ta.value, mtime: cur.mtime }); delete drafts.raw; keepDrafts(); await refreshList();
+    cur = await api('/api/raw', { id: t.id, text: ta.value, mtime: cur.mtime }); delete drafts.raw; keepDrafts(); await refreshList(true);
   }, null, 'Ctrl+S 저장 · 그사이 세션이 고쳤으면 저장이 거절됩니다');
   ta.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); r.save.click(); } });
   return h('div', {}, ta, r.row);
@@ -493,7 +506,7 @@ async function renderNew() {
     try {
       const r = await api('/api/new', { sid: sel.value, title: title.value, text: ta.value, bell: bell.checked });
       store.set('board.new', {}); store.set('board.newSession', sel.value);
-      await refreshList(); go(r.id);
+      await refreshList(true); go(r.id);
     } catch (e) { ok.textContent = '실패: ' + e.message; go_.disabled = false; }
   };
   ta.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); go_.click(); } });
@@ -521,7 +534,10 @@ $('#outBtn').onclick = async e => {   // 한 번 더 눌러야 — 실수로 눌
   if (want === '+new') { renderTabs(); renderNew(); }
   else if (narrow.matches && !want) { renderTabs(); show('list'); }   // 폰은 목록부터
   else if (first) await open(first.id); else { renderTabs(); $('#page').replaceChildren(h('p', { className: 'empty', textContent: '올라온 작업이 없습니다.' })); }
-  setInterval(refreshList, 2000);
+  // 앞 요청이 끝난 뒤 다음을 건다(느릴 때 겹쳐 쌓이지 않게), 안 보는 탭에선 쉰다
+  const tick = async () => { if (!document.hidden) await refreshList(); setTimeout(tick, 2000); };
+  setTimeout(tick, 2000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshList(); });
 })();
 function route() {
   const id = decodeURIComponent(location.hash.slice(1));
