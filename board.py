@@ -765,6 +765,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """이 PC 문(BOARD_PORT, 127.0.0.1 만)은 그대로. 밖의 문은 슬랙 코드로 로그인한 기기만, 채널(/mcp)은 로그인해도 안 된다 —
         [보내기]가 세션 15개에 '사용자 말'로 들어가고 세션은 이 PC 에서 명령을 실행한다."""
         if not self.public():
+            # 이 PC 문도 브라우저로 연 다른 사이트가 두드릴 수 있다 — text/plain POST 는 미리 묻기(preflight) 없이 오고 서버는 본문을 JSON 으로 읽는다.
+            # 그러면 아무 웹페이지가 [보내기]로 세션에 '사용자 말'을 넣는다(11-12 점검). 주소(Host)가 이 PC 이름이 아니면(DNS 리바인딩) 막고,
+            # 쓰기 요청에 Origin 이 붙어 왔으면 이 PC 화면에서 온 것만 받는다(Claude Code·curl·board 명령은 Origin 을 안 붙인다).
+            local = ("localhost", "127.0.0.1", "::1")
+            host = urllib.parse.urlsplit("//" + (self.headers.get("Host") or "")).hostname
+            origin = self.headers.get("Origin")
+            if host not in local or (self.command != "GET" and origin is not None and urllib.parse.urlsplit(origin).hostname not in local):
+                self.reply({"error": "이 PC 화면에서 온 요청이 아닙니다"}, code=403)
+                return False
             return True
         if path in ("/mcp", "/api/channels"):
             self.reply({"error": "이 PC 에서만"}, code=403)

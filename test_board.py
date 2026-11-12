@@ -95,17 +95,23 @@ assert [e["at"] for b in _b if b.get("id") == "Q1" for e in b["entries"]] == ["2
 # 밖의 문(터널): 로그인한 기기만, 채널은 로그인해도 403. 이 PC 문은 그대로
 import re as _re, argparse as _a
 board.LOGINS = _p.Path(tempfile.mkdtemp()) / "logins.json"
-def _h(public, cookie="", method="GET", origin=None):
+def _h(public, cookie="", method="GET", origin=None, host=None):
     h = board.Handler.__new__(board.Handler)
     h.server = type("S", (), {"public": public})()
     h.client_address, h.command, out = ("127.0.0.1", 1), method, []
-    h.headers = {"Cookie": cookie, "Host": "board.x", **({"Origin": origin} if origin else {})}
+    h.headers = {"Cookie": cookie, "Host": host or ("board.x" if public else "127.0.0.1:8770"), **({"Origin": origin} if origin else {})}
     h.reply = lambda body, ctype=None, code=200, headers=None: out.append((code, headers or {}))
     return h, out
 def _gate(public, path, cookie="", **k):
     h, out = _h(public, cookie, **k)
     return h.gate(path), [c for c, _ in out]
 assert _gate(False, "/mcp") == (True, [])
+# 이 PC 문: 다른 사이트의 쓰기·다른 이름으로 온 요청(DNS 리바인딩)은 막고, 이 PC 화면·Origin 없는 클라이언트(Claude Code·curl)는 받는다
+assert _gate(False, "/api/answer", method="POST", origin="https://evil.example") == (False, [403])
+assert _gate(False, "/api/answer", method="POST", origin="null") == (False, [403])
+assert _gate(False, "/api/tasks", host="evil.example:8770") == (False, [403])
+assert _gate(False, "/api/answer", method="POST", origin="http://localhost:8770", host="localhost:8770") == (True, [])
+assert _gate(False, "/mcp", method="POST") == (True, [])
 assert _gate(True, "/") == (False, [200])
 assert _gate(True, "/api/tasks", "board=nope") == (False, [401])
 assert _gate(True, "/mcp") == (False, [403])
