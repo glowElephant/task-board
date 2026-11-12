@@ -55,11 +55,8 @@ assert "## 메모\n-> 새 메모" in board.add_answer("본문만", board.MEMO, "
 assert board.add_answer(DOC, "Q1", "  ") == DOC
 
 assert board.split(board.set_meta(DOC, "status", "끝"))[0]["status"] == "끝"
-assert not board.local_only.__doc__ is None
 import tempfile, pathlib as _p
-_f = _p.Path(tempfile.mkdtemp()) / "task.md"
-_f.write_text("---\ntitle: x\nlocal: yes\n---\n본문\n"); assert board.local_only(_f)
-_f.write_text("---\ntitle: x\n---\n본문\n"); assert not board.local_only(_f)
+assert board.is_local({"local": "yes"}) and not board.is_local({})
 
 # 채널 배달 대상: sid 가 먼저, 없으면 이름이 하나뿐일 때만(같은 이름이 여럿이면 안 보낸다)
 import time as _t
@@ -70,9 +67,9 @@ assert board.chan_targets({"session": "가 [abc123]"}) == ["m1"]
 assert board.chan_targets({"session": "나"}) == []
 assert board.chan_targets({"sid": "없는세션", "session": "다"}) == []
 
-# deliver: [보내기]는 한 번만 넣고 읽음 처리, 자리 비움 폰 알림은 자리 비움 한 번에 작업마다 한 번
+# deliver: [보내기]는 한 번만 넣고 읽음 처리
 import queue as _q
-board.BOARD, board.EXTRA, board.HUB = _p.Path(tempfile.mkdtemp()), [], ""
+board.BOARD, board.EXTRA = _p.Path(tempfile.mkdtemp()), []
 (board.BOARD / "t").mkdir()
 (board.BOARD / "t" / "task.md").write_text("---\ntitle: 시험 작업\nsession: 가\nsid: s1\n---\n## 정할 것\n### [ ] Q1. 할까?\n-> 응\n")
 board.send(board.BOARD / "t", ["Q1"])
@@ -81,46 +78,6 @@ board._chans["m1"] = {"pid": 11, "q": q}
 board.deliver()
 board.deliver()
 assert q.qsize() == 1 and "-> 응" in q.get()["params"]["content"] and not board.unread(board.BOARD / "t")
-(board.BOARD / "t" / "task.md").write_text("---\ntitle: 시험 작업\nsession: 가\nsid: s1\n---\n## 정할 것\n### [ ] Q1. 할까?\n-> 응\n⇒ 되물음\n")
-away = {"state": "away", "away_since": 100}
-board.deliver(away)
-board.deliver(away)
-assert q.qsize() == 1 and "내 차례 1건" in q.get()["params"]["content"]
-
-# reply: 담당 세션이 부르면 읽음까지(같은 답으로 또 안 깨움), 남이 부르거나 PC 에서 보낸 게 밀려 있으면 그대로 보낸다
-import argparse as _a, os as _os
-_ans = board.BOARD / "ans.txt"; _ans.write_text("아티팩트에서 온 답")
-_reply = lambda: board.cmd_reply(_a.Namespace(task="t", item="Q1", file=str(_ans), send=True))
-_os.environ["CLAUDE_CODE_SESSION_ID"] = "s1"; _reply(); assert not board.unread(board.BOARD / "t")
-_t.sleep(0.02); board.send(board.BOARD / "t", ["Q1"]); _reply(); assert board.unread(board.BOARD / "t")   # 밀린 [보내기]는 삼키지 않는다(파일 시각 단위 때문에 잠깐 띄움)
-_t.sleep(0.02); (board.BOARD / "t" / ".seen").write_text("x"); _t.sleep(0.02)
-_os.environ["CLAUDE_CODE_SESSION_ID"] = "남"; _reply(); assert board.unread(board.BOARD / "t")
-# 세션 아티팩트 묶음: 다시 띄워 ref 가 바뀌어도 sid 가 같으면 한 장, 옛 ref 기록(주소)을 이어 쓴다
-for n, ref in (("a1", "aaaaaa"), ("a2", "bbbbbb")):
-    (board.BOARD / n).mkdir()
-    (board.BOARD / n / "task.md").write_text(f"---\ntitle: {n}\nsession: 나 [{ref}]\nsid: S9\n---\n## 정할 것\n")
-assert board.sess_key("a1") == board.sess_key("a2") == "S9" and set(board.session_tasks("S9")) == {"a1", "a2"}
-(board.BOARD / ".sessions").mkdir(exist_ok=True)
-(board.BOARD / ".sessions" / "aaaaaa.json").write_text('{"url": "https://x/old"}')
-assert board.sess_state("S9", old="aaaaaa")["url"] == "https://x/old" and (board.BOARD / ".sessions" / "S9.json").is_file()
-
-# push: 처음 생긴 작업은 올리고, 이미 있으면 건너뛴다(--now 일 때만 — 11-10 B). --now 는 같은 세션의 바뀐 작업 줄도 같이
-import io as _io, contextlib as _cl
-board.HUB = "https://hub"; _os.environ["CLAUDE_CODE_SESSION_ID"] = "S9"   # push 가 문서에 이 세션 sid 를 적는다
-_push = lambda t, now=False: board.cmd_push(_a.Namespace(task=t, now=now, out=None))
-def _out(fn):
-    b = _io.StringIO()
-    with _cl.redirect_stdout(b):
-        fn()
-    return b.getvalue()
-o = _out(lambda: _push("a1"))
-assert "1) Artifact publish" in o and "ArtifactData batch" in o and "board pushed a1 a2 --version" in o, o
-_out(lambda: board.cmd_pushed(_a.Namespace(task=["a1", "a2"], url=None, version=[3, 4], reset=False)))
-assert board.remote(board.BOARD / "a2")["version"] == 4 and board.changed("a1") is False
-assert "건너뜀" in _out(lambda: _push("a1"))
-_t.sleep(0.02); (board.BOARD / "a2" / "task.md").write_text("---\ntitle: a2\nsession: 나 [bbbbbb]\nsid: S9\n---\n## 정할 것\n### [ ] Q1. 새 질문\n")
-o = _out(lambda: _push("a1", now=True))
-assert '"if_version": 4' in o and "board pushed a1 a2" in o, o
 # 받은 시각: 서버 시작 때 처음 보는 옛 문서의 말은 '' (모름), 그 뒤 새로 생긴 말만 문서 수정 시각. 같은 글 두 번도 따로
 _sd = _p.Path(tempfile.mkdtemp())
 _b = blocks(DOC)
@@ -135,18 +92,41 @@ assert _at[("Q1", "ㅇㅋ")] == "2026-11-11 09:05" and _at[("Q2", "첫 답")] ==
 _sd2 = _p.Path(tempfile.mkdtemp()); _b = blocks(board.add_answer(DOC, "Q1", "새 작업 말"))
 board.stamp(_sd2, _b, _t.mktime((2026, 11, 11, 9, 6, 0, 0, 0, -1)))   # 서버가 떠 있을 때 생긴 문서는 처음부터 시각
 assert [e["at"] for b in _b if b.get("id") == "Q1" for e in b["entries"]] == ["2026-11-11 09:06"]
-# 다른 PC: 암호 쿠키 없으면 화면 대신 로그인, API 401, 채널은 쿠키가 있어도 403. 이 PC(127.*)는 그대로
-board.PASSWORD, board.PASS_COOKIE = "pw", "c0ffee"
-def _gate(ip, path, cookie=""):
+# 밖의 문(터널): 로그인한 기기만, 채널은 로그인해도 403. 이 PC 문은 그대로
+import re as _re, argparse as _a
+board.LOGINS = _p.Path(tempfile.mkdtemp()) / "logins.json"
+def _h(public, cookie="", method="GET", origin=None):
     h = board.Handler.__new__(board.Handler)
-    h.client_address, h.headers, out = (ip, 1), {"Cookie": cookie}, []
-    h.reply = lambda body, ctype=None, code=200, headers=None: out.append(code)
-    return h.gate(path), out
-assert _gate("127.0.0.1", "/mcp") == (True, [])
-assert _gate("192.168.60.9", "/") == (False, [200])
-assert _gate("192.168.60.9", "/api/tasks", "board=nope") == (False, [401])
-assert _gate("192.168.60.9", "/api/tasks", "board=c0ffee") == (True, [])
-assert _gate("192.168.60.9", "/mcp", "board=c0ffee") == (False, [403])
-board.PASSWORD = board.PASS_COOKIE = ""
-assert _gate("192.168.60.9", "/api/tasks", "board=") == (False, [401])
+    h.server = type("S", (), {"public": public})()
+    h.client_address, h.command, out = ("127.0.0.1", 1), method, []
+    h.headers = {"Cookie": cookie, "Host": "board.x", **({"Origin": origin} if origin else {})}
+    h.reply = lambda body, ctype=None, code=200, headers=None: out.append((code, headers or {}))
+    return h, out
+def _gate(public, path, cookie="", **k):
+    h, out = _h(public, cookie, **k)
+    return h.gate(path), [c for c, _ in out]
+assert _gate(False, "/mcp") == (True, [])
+assert _gate(True, "/") == (False, [200])
+assert _gate(True, "/api/tasks", "board=nope") == (False, [401])
+assert _gate(True, "/mcp") == (False, [403])
+# 코드 받기 → 슬랙(가짜) → 코드 → 3달 쿠키 → 들어감. 1분 안 다시 받기·틀린 코드·쓴 코드·로그아웃은 막힘
+sent = []
+board.slack = lambda text: sent.append(text)
+_h(True)[0].login_code(); code = _re.search(r"\d{6}", sent[-1]).group()
+_h(True)[0].login_code(); assert len(sent) == 1
+h, out = _h(True); h.login(b"code=" + (b"000000" if code != "000000" else b"111111")); assert out[-1][0] == 401
+h, out = _h(True); h.login(f"code={code}".encode()); assert out[-1][0] == 303, out
+ck = out[-1][1]["Set-Cookie"]; tok = ck.split(";")[0].split("=", 1)[1]
+assert "HttpOnly" in ck and "Secure" in ck and "SameSite=Lax" in ck and f"Max-Age={90 * 86400}" in ck
+assert tok not in board.LOGINS.read_text() and oct(board.LOGINS.stat().st_mode)[-3:] == "600"
+assert _gate(True, "/api/tasks", f"board={tok}") == (True, [])
+assert _gate(True, "/mcp", f"board={tok}") == (False, [403])
+assert _gate(True, "/api/answer", f"board={tok}", method="POST", origin="https://evil.example") == (False, [403])
+assert _gate(True, "/api/answer", f"board={tok}", method="POST", origin="https://board.x") == (True, [])
+h, out = _h(True); h.login(f"code={code}".encode()); assert out[-1][0] == 401   # 코드는 한 번만
+board._save_logins({}); assert _gate(True, "/api/tasks", f"board={tok}") == (False, [401])   # 모든 기기 로그아웃
+# 🔔: 진행 중이면 안 보내고, 끝이 되면 한 번 보내고 지운다
+(board.BOARD / "t" / ".bell").touch(); sent.clear(); board.ring_done(); assert sent == []
+board.cmd_done(_a.Namespace(task="t")); board.ring_done(); board._rang.clear(); board.ring_done()
+assert len(sent) == 1 and "시험 작업" in sent[0] and not (board.BOARD / "t" / ".bell").exists(), sent
 print("ok")

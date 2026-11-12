@@ -75,9 +75,27 @@ aside { border-right: 1px solid var(--line); background: var(--surface); overflo
 .dot.txt { background: transparent; border: 1.5px solid var(--wait); }
 .count { background: var(--me); color: #fff; border-radius: 9px; font-size: 12px; padding: 0 7px; font-weight: 700;
   font-variant-numeric: tabular-nums; flex: none; }
-#doneBtn { margin: 12px 14px; align-self: flex-start; }
+.side-foot { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 14px; margin-top: auto; }
+#outBtn { color: var(--muted); }
+.bell.on { background: var(--me-soft); border-color: var(--me); color: var(--me); font-weight: 600; }
+.back { display: none; margin-bottom: 6px; }
 #main { overflow-y: auto; }
-@media (max-width: 860px) { .app { grid-template-columns: 1fr; height: auto; } aside { max-height: 50vh; border-right: 0; border-bottom: 1px solid var(--line); } #main { overflow: visible; } }
+/* 폰: 목록 화면과 작업 화면을 하나씩(.app.task = 작업 화면). 글 칸 16px 은 iOS 가 확대하지 않게 */
+@media (max-width: 860px) {
+  .app { display: block; height: auto; }
+  aside { border-right: 0; min-height: 100dvh; overflow: visible; }
+  .app.task aside, .app:not(.task) #main { display: none; }
+  #main { overflow: visible; }
+  .back { display: inline-block; }
+  .page { padding: 12px 12px 80px; }
+  h1 { font-size: 19px; }
+  button { padding: 8px 14px; }
+  .trow { padding: 10px; }
+  textarea { font-size: 16px; }
+  .item > .head, .item .body, .thread, .answer { padding-left: 12px; padding-right: 12px; }
+  .say { grid-template-columns: 40px 1fr; }
+  .mermaid svg { max-width: none !important; }   /* 폰에선 그림을 줄이지 않고 옆으로 밀어 본다 */
+}
 
 .page { max-width: 1200px; margin: 0 auto; padding: 20px 16px 80px; }
 .top { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
@@ -146,7 +164,8 @@ details.reopen > summary { color: var(--muted); font-size: 13px; cursor: pointer
   <aside aria-label="세션별 작업">
     <div class="side-head"><span class="brand">Task Board</span><span id="total"></span><span class="sub" id="sub"></span></div>
     <div id="groups"></div>
-    <button id="doneBtn" type="button">끝난 작업</button>
+    <div class="side-foot"><button id="doneBtn" type="button">끝난 작업</button>
+      <button id="outBtn" type="button" title="폰을 잃어버렸을 때 — 로그인해 둔 기기 전부 다시 슬랙 코드를 받아야 합니다">모든 기기 로그아웃</button></div>
   </aside>
   <main id="main"><div class="page" id="page"><p class="empty">불러오는 중…</p></div></main>
 </div>
@@ -164,64 +183,22 @@ marked.use({ tokenizer: { del(src) {
 mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'neutral', securityLevel: 'loose' });
 
 let tasks = [], cur = null, view = 'task', drafts = {}, stale = false;
-
-// 아티팩트로 열린 경우(window.BOARD) — 두 가지:
-//  · 세션 한 장(R.mode === 'session'): board push 가 그 세션의 진행 중 작업을 심는다. [보내기] = Claude 에게 보내기 → 이 아티팩트를 올린 그 세션만 깬다.
-//  · 목록(R.mode === 'hub'): 각 세션이 db tasks 에 쓴 줄을 실시간으로 읽는다. 왼쪽 PC·세션 목록과 내용은 PC 화면과 같고, 답은 작업 아티팩트에서.
-const R = window.BOARD || null;
-const HUB = R && R.mode === 'hub';
-let hubReady = null;
-if (HUB) hubReady = new Promise(done => {
-  const fail = msg => { $('#page').replaceChildren(h('p', { className: 'empty', textContent: msg })); done(); };
-  const timer = setTimeout(() => fail('목록을 못 불러왔습니다 — 잠시 뒤 다시 열어 주세요.'), 10000);
-  (window.claude ? claude.use('db') : Promise.resolve(null)).then(db => {
-    if (!db) { clearTimeout(timer); return fail('이 화면에선 목록을 읽을 수 없습니다(claude.ai 로그인 필요).'); }
-    db.collection('tasks').onSnapshot(snap => {
-      clearTimeout(timer);
-      R.tasks = []; R.details = {};
-      for (const d of snap.docs) {
-        const r = d.data() || {};
-        const t = { id: d.id, kind: 'task', title: r.title || r.task, session: r.session || '', pc: r.pc || '?', status: r.status || '진행 중',
-          mine: r.mine || 0, waiting: r.waiting || 0, asks: r.asks || [], url: r.url || '', mtime: r.updated || 0 };
-        R.tasks.push(t); R.details[d.id] = { ...t, blocks: r.blocks || [] };
-      }
-      done(); if (cur) refreshList();
-    }, e => { clearTimeout(timer); fail('목록을 못 읽었습니다: ' + (e && e.message || e)); });
-  });
-});
-let comments = null, assets = null;
-if (R && window.claude) { claude.use('comments').then(c => comments = c); claude.use('assets').then(a => assets = a); }
-const why = { no_session: '이 세션이 지금 꺼져 있습니다', writers_only: '편집 권한이 있어야 보낼 수 있습니다', off: '이 화면에선 보내기가 꺼져 있습니다' };
-const bytes = t => new TextEncoder().encode(t).length;
-async function relay(tid, item, text, send) {
-  if (!comments) throw new Error('이 화면에선 보낼 수 없습니다(댓글 권한)');
-  const body = `[board ${send ? 'send' : 'save'}] ${tid} ${item}\n${text}`;
-  if (bytes(body) > 4000) throw new Error('너무 깁니다(한 번에 약 1,300자까지) — 나눠서 보내 주세요');
-  const anchor = await comments.anchorFor(document.getElementById('q-' + item) || $('#page'));
-  const leave = () => comments.create({ anchor, text: body });   // 세션이 꺼졌을 때 — 그냥 댓글로 남기면 세션이 다시 올릴 때 읽는다
-  const can = await comments.canSendToClaude().catch(() => 'off');
-  if (can !== 'available') throw Object.assign(new Error(can === 'no_session' ? '이 작업 세션이 지금 꺼져 있습니다' : (why[can] || can)), can === 'no_session' ? { leave } : {});
-  try { await comments.sendToClaude({ anchor, text: body }); }
-  catch (e) {
-    if (e && e.code === 'rate_limited') throw new Error('너무 자주 보냈습니다 — 잠시 뒤 다시 보내 주세요(쓴 글은 남아 있습니다)');
-    if (e && e.code === 'claude_unavailable') throw Object.assign(new Error('이 작업 세션이 지금 받을 수 없습니다'), { leave });
-    throw e;
-  }
-  const d = R.details[tid];   // 다시 올라오기 전까지 내 말을 바로 보이게
-  const b = d && d.blocks.find(b => (b.type === 'item' && b.id === item) || (b.type === 'memo' && item === '메모'));
-  if (b) { const t = new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString(); b.entries.push({ who: 'me', text, at: t.slice(0, 10) + ' ' + t.slice(11, 16) }); if (b.turn) b.turn = 'claude'; }
-  return d;
+// 폰(좁은 화면)은 목록과 작업을 한 화면씩 — 작업을 누르면 기록을 하나 쌓아 뒤로 가기(제스처)가 목록으로 온다
+const narrow = matchMedia('(max-width: 860px)'), coarse = matchMedia('(pointer: coarse)').matches;
+function show(which) { document.querySelector('.app').classList.toggle('task', which === 'task'); }
+function go(id, jump) {
+  if (narrow.matches && location.hash.slice(1) !== encodeURIComponent(id)) history.pushState({ fromList: true }, '', '#' + encodeURIComponent(id));
+  open(id, false, jump);
 }
-async function remoteApi(path, body) {
-  if (path === '/api/tasks') return R.tasks;
-  if (path.startsWith('/api/task?id=')) { const d = R.details[decodeURIComponent(path.slice(13))]; if (!d) throw new Error('없음'); return d; }
-  if (path === '/api/answer') return relay(body.id, body.item, body.text, !!body.send);
-  throw new Error('PC 에서만 됩니다');
+function backBtn() {
+  return h('button', { type: 'button', className: 'back', textContent: '← 목록', onclick: () => {
+    if (history.state && history.state.fromList) return history.back();
+    history.replaceState(null, '', location.pathname + location.search); show('list'); } });
 }
 
 async function api(path, body) {
-  if (R) return remoteApi(path, body);
   const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (r.status === 401) { location.reload(); throw new Error('로그인이 필요합니다'); }   // 밖의 문에서 로그인이 풀렸으면 로그인 화면으로
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || r.status);
   return j;
@@ -235,9 +212,7 @@ function md(text, tid) {
   box.querySelectorAll('img').forEach(img => {
     const src = img.getAttribute('src') || '';
     if (/^(https?:|data:|\/)/.test(src)) return;
-    if (!R) { img.src = `/files/${encodeURIComponent(tid)}/${src}`; return; }
-    if ((R.images || {})[tid + '/' + src]) img.src = R.images[tid + '/' + src];
-    else img.replaceWith(h('span', { className: 'pill claude', textContent: HUB ? '사진 — 작업 아티팩트에서 보기' : '사진(커서 못 실음) — PC 에서 보기' }));
+    img.src = `/files/${encodeURIComponent(tid)}/${src}`;
   });
   box.querySelectorAll('pre > code.language-mermaid').forEach(code => {
     const div = h('div', { className: 'mermaid', textContent: code.textContent });
@@ -254,8 +229,8 @@ let folded = store.get('board.folded', {});   // 세션별로 사용자가 접�
 function groups() {
   const open = tasks.filter(t => t.status !== '끝'), by = new Map();
   for (const t of open) {
-    const key = t.kind === 'txt' ? 'txt' : (HUB ? t.pc + ' · ' : '') + (t.session || '세션 미상');
-    if (!by.has(key)) by.set(key, { key, pc: t.pc, name: key === 'txt' ? 'txt 문서 (옛 형식)' : shortSession(t.session || '세션 미상'), ref: (key.match(/\[([0-9a-f]+)\]$/) || [])[1] || '', items: [] });
+    const key = t.kind === 'txt' ? 'txt' : (t.session || '세션 미상');
+    if (!by.has(key)) by.set(key, { key, name: key === 'txt' ? 'txt 문서 (옛 형식)' : shortSession(t.session || '세션 미상'), ref: (key.match(/\[([0-9a-f]+)\]$/) || [])[1] || '', items: [] });
     by.get(key).items.push(t);
   }
   const gs = [...by.values()];
@@ -272,38 +247,18 @@ function taskRow(t) {
   const more = (t.asks || []).length - asks.length;
   const b = h('button', { type: 'button', className: 'trow' + (on ? ' on' : ''), title: t.brief ? t.title + '\n\n' + t.brief : t.title },
     h('div', { className: 'top' }, h('span', { className: 'dot ' + (t.kind === 'txt' ? 'txt' : t.mine ? 'me' : '') }),
-      h('span', { className: 'tt', textContent: t.title }), t.mine ? h('span', { className: 'count', textContent: t.mine }) : null),
+      h('span', { className: 'tt', textContent: t.title }), t.bell ? h('span', { title: '끝나면 슬랙으로 알림', textContent: '🔔' }) : null,
+      t.mine ? h('span', { className: 'count', textContent: t.mine }) : null),
     t.now ? h('div', { className: 'now', textContent: '지금: ' + t.now }) : null,
-    asks.length ? h('ul', { className: 'asks' }, asks.map(q => h('li', { textContent: q, title: q + ' — 누르면 이 질문으로', onclick: e => { e.stopPropagation(); open(t.id, false, q.split('.')[0]); } })),
+    asks.length ? h('ul', { className: 'asks' }, asks.map(q => h('li', { textContent: q, title: q + ' — 누르면 이 질문으로', onclick: e => { e.stopPropagation(); go(t.id, q.split('.')[0]); } })),
       more > 0 ? h('li', { className: 'more', textContent: `외 ${more}개` }) : null) : null,
     h('div', { className: 'when', textContent: when(t.mtime) + (t.unread && !t.listening ? ' · ⚠ 보냈는데 세션이 안 듣는 중' : t.mine ? '' : t.waiting ? ' · 세션이 반영 중' : ' · 내 차례 없음') }));
-  b.onclick = () => open(t.id, false, t.mine && asks.length ? asks[0].split('.')[0] : null);   // 내 차례면 그 질문으로 바로
+  b.onclick = () => go(t.id, t.mine && asks.length ? asks[0].split('.')[0] : null);   // 내 차례면 그 질문으로 바로
   return b;
-}
-function grpHead(key, name, n, mine, isOpen, cls) {
-  const head = h('button', { type: 'button', className: 'grp-head' + (cls ? ' ' + cls : ''), title: key },
-    h('span', { className: 'chev', textContent: '▸' }), h('span', { className: 'name', textContent: name }),
-    h('span', { className: 'n', textContent: n }), mine ? h('span', { className: 'count', textContent: mine }) : null);
-  head.setAttribute('aria-expanded', String(isOpen));
-  head.onclick = () => { folded[key] = isOpen; store.set('board.folded', folded); renderTabs(); };
-  return head;
 }
 function renderTabs() {
   const box = $('#groups'); box.replaceChildren();
-  if (HUB) {   // PC 마다 접히는 묶음 → 그 안에 세션 묶음(PC 화면과 같은 모양)
-    const pcs = new Map();
-    for (const g of groups()) { if (!pcs.has(g.pc)) pcs.set(g.pc, []); pcs.get(g.pc).push(g); }
-    for (const [pc, gs] of pcs) {
-      const mine = gs.reduce((n, g) => n + g.mine, 0), key = 'pc:' + pc;
-      const isOpen = folded[key] === undefined ? true : !folded[key];
-      const body = h('div', { className: 'pc-body' });
-      for (const g of gs) {
-        const gOpen = folded[g.key] === undefined ? g.mine > 0 : !folded[g.key];
-        body.append(h('section', { className: 'grp' }, grpHead(g.key, g.name, g.items.length > 1 ? `작업 ${g.items.length}` : '', g.mine, gOpen), h('div', { className: 'grp-body' }, g.items.map(taskRow))));
-      }
-      box.append(h('section', { className: 'pc-grp' }, grpHead(key, 'PC ' + pc, `세션 ${gs.length}`, mine, isOpen, 'pc'), body));
-    }
-  } else for (const g of groups()) {
+  for (const g of groups()) {
     const isOpen = folded[g.key] === undefined ? g.mine > 0 : !folded[g.key];
     const head = h('button', { type: 'button', className: 'grp-head', ariaExpanded: String(isOpen), title: g.key },
       h('span', { className: 'chev', textContent: '▸' }), h('span', { className: 'name', textContent: g.name }),
@@ -318,8 +273,8 @@ function renderTabs() {
   $('#doneBtn').textContent = `끝난 작업 ${done}`;
   const mine = tasks.filter(t => t.status !== '끝').reduce((n, t) => n + t.mine, 0);
   $('#total').replaceChildren(...(mine ? [h('span', { className: 'count', textContent: mine })] : []));
-  $('#sub').textContent = (HUB ? `PC ${new Set(tasks.filter(t => t.status !== '끝').map(t => t.pc)).size} · ` : '') + `세션 ${groups().filter(g => g.key !== 'txt').length} · 작업 ${tasks.filter(t => t.status !== '끝').length}`;
-  const name = R && R.mode === 'session' ? 'Task Board · ' + shortSession(R.session) : 'Task Board';
+  $('#sub').textContent = `세션 ${groups().filter(g => g.key !== 'txt').length} · 작업 ${tasks.filter(t => t.status !== '끝').length}`;
+  const name = 'Task Board';
   document.title = mine ? `(${mine}) ${name}` : name;
 }
 function keepDrafts() { if (cur) store.set('board.drafts.' + cur.id, drafts); }
@@ -338,8 +293,8 @@ async function refreshList() {
 }
 document.addEventListener('focusout', e => { if (stale && e.target.tagName === 'TEXTAREA' && view === 'task') { stale = false; setTimeout(() => open(cur.id, true), 0); } });
 
-function liveTag(s) {   // 세션이 지금 일하는 중인지 — PC 화면만(아티팩트는 찍어 둔 때라 틀린다)
-  return R || !s ? null : h('span', { className: 'live ' + s, textContent: s === 'idle' ? '쉬는 중' : '● 일하는 중' });
+function liveTag(s) {   // 세션이 지금 일하는 중인지
+  return !s ? null : h('span', { className: 'live ' + s, textContent: s === 'idle' ? '쉬는 중' : '● 일하는 중' });
 }
 async function open(id, keepScroll, jump) {
   const y = $('#main').scrollTop;
@@ -348,8 +303,9 @@ async function open(id, keepScroll, jump) {
   if (prev !== id || view !== 'task') drafts = store.get('board.drafts.' + id, {});
   view = 'task'; stale = false;
   if (location.hash.slice(1) !== encodeURIComponent(id)) history.replaceState(null, '', '#' + encodeURIComponent(id));
-  renderTabs(); renderTask();
+  renderTabs(); renderTask(); show('task');
   $('#main').scrollTop = keepScroll ? y : 0;
+  if (!keepScroll) scrollTo(0, 0);
   const q = jump && document.getElementById('q-' + jump);
   if (q) { q.scrollIntoView({ block: 'start' }); q.classList.add('flash'); setTimeout(() => q.classList.remove('flash'), 1500); }
 }
@@ -375,12 +331,9 @@ function saveRow(onSave, onSend, hint, msg) {
 function attachPaste(ta, tid) {
   const upload = async file => {
     let path;
-    if (R) { if (!assets) return alertRow(ta, '이 화면에선 이미지를 올릴 수 없습니다'); path = (await assets.upload(file)).url; }
-    else {
-      const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
-      const r = await fetch(`/api/image?id=${encodeURIComponent(tid)}&ext=${ext}`, { method: 'POST', body: file });
-      path = (await r.json()).path;
-    }
+    const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+    const r = await fetch(`/api/image?id=${encodeURIComponent(tid)}&ext=${ext}`, { method: 'POST', body: file });
+    path = (await r.json()).path;
     const at = ta.selectionStart, snip = `![](${path})`;
     ta.value = ta.value.slice(0, at) + snip + ta.value.slice(ta.selectionEnd);
     ta.dispatchEvent(new Event('input'));
@@ -390,7 +343,6 @@ function attachPaste(ta, tid) {
   ta.addEventListener('drop', e => { const f = [...e.dataTransfer.files].filter(f => f.type.startsWith('image/')); if (f.length) { e.preventDefault(); f.forEach(upload); } });
   return upload;
 }
-function alertRow(ta, msg) { const ok = ta.parentElement && ta.parentElement.querySelector('.ok'); if (ok) ok.textContent = msg; }
 
 const okMsg = {};
 function thumbs(text, tid) {
@@ -405,12 +357,12 @@ function editor(key, value, tid, placeholder, onSave, onSend) {
   const stamp = () => new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
   const done = (fn, msg) => async () => { cur = await fn(ta.value); delete drafts[key]; keepDrafts(); okMsg[key] = `${msg} ${stamp()}`; await refreshList(); renderTask(); };
   const r = saveRow(done(onSave, '저장됨 — 대화에 올렸습니다'), onSend && done(onSend, '보냄 — 세션이 읽고 반영합니다'),
-    tid ? (R ? '저장 = 문서에만 · 보내기 = 세션이 읽고 반영' : '저장 = 여기에만 · 보내기 = 세션이 읽고 반영 · 이미지 Ctrl+V · Ctrl+Enter 보내기') : '', okMsg[key]);
+    tid ? (coarse ? '저장 = 여기에만 · 보내기 = 세션이 읽고 반영' : '저장 = 여기에만 · 보내기 = 세션이 읽고 반영 · 이미지 Ctrl+V · Ctrl+Enter 보내기') : '', okMsg[key]);
   ta.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && r.send) { e.preventDefault(); r.send.click(); }
     if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); r.save.click(); }
   });
-  if (R && upload) {   // 폰엔 붙여넣기가 불편하다 — 사진 고르기
+  if (upload) {   // 폰엔 붙여넣기가 불편하다 — 사진 고르기
     const pick = h('input', { type: 'file', accept: 'image/*', hidden: true });
     pick.onchange = () => [...pick.files].forEach(upload);
     r.row.insertBefore(h('button', { type: 'button', textContent: '사진', onclick: () => pick.click() }), r.save);
@@ -423,10 +375,6 @@ function thread(entries, tid) {
   return h('div', { className: 'thread' }, entries.map(e =>
     h('div', { className: 'say ' + e.who }, h('div', { className: 'who' }, e.who === 'me' ? '나' : '세션', e.at ? h('span', { className: 'at', textContent: e.at.slice(5) }) : null), h('div', { className: 'txt' }, md(e.text, tid)))));
 }
-function answerLink() {   // 목록에서 답하면 목록을 올린 세션이 깬다(=중계) — 답은 그 작업 세션이 올린 작업 아티팩트에서
-  return cur && cur.url ? h('a', { className: 'answer-link', href: cur.url, target: '_blank', rel: 'noopener', textContent: '답하기 — 이 작업 아티팩트 열기 ↗' })
-    : h('span', { className: 'pill claude', textContent: '세션이 아직 작업 아티팩트를 안 올렸습니다' });
-}
 function itemCard(b, tid) {
   const label = { me: '내 차례', claude: '세션 차례', done: '결정' }[b.turn];
   const card = h('section', { className: 'item ' + b.turn, id: 'q-' + b.id },
@@ -434,7 +382,7 @@ function itemCard(b, tid) {
       h('span', { className: 'pill ' + b.turn, textContent: label })));
   if (b.desc) card.append(h('div', { className: 'body' }, md(b.desc, tid)));
   if (b.entries.length) card.append(thread(b.entries, tid));
-  const ed = HUB ? answerLink() : editor('q:' + b.id, '', tid, b.turn === 'claude' ? '덧붙일 말이 있으면 — 세션이 아직 반영 전입니다' : '답을 적어 주세요 — 추천대로면 "ㅇㅋ"',
+  const ed = editor('q:' + b.id, '', tid, b.turn === 'claude' ? '덧붙일 말이 있으면 — 세션이 아직 반영 전입니다' : '답을 적어 주세요 — 추천대로면 "ㅇㅋ"',
     text => api('/api/answer', { id: tid, item: b.id, text }),
     text => api('/api/answer', { id: tid, item: b.id, text, send: true }));
   if (b.turn === 'done') card.append(h('details', { className: 'reopen' }, h('summary', { textContent: '다시 답하기' }), h('div', { className: 'answer' }, ed)));
@@ -446,35 +394,20 @@ function renderTask() {
   const t = cur, main = $('#page');
   const doneNow = t.status === '끝';
   const head = h('div', { className: 'top' },
-    h('div', {}, h('h1', { textContent: t.title }),
+    h('div', {}, backBtn(), h('h1', { textContent: t.title }),
       h('div', { className: 'meta' },
         h('span', { className: 'pill ' + (doneNow ? 'done' : t.mine ? 'me' : 'claude'), textContent: doneNow ? '끝' : t.mine ? `내 차례 ${t.mine}` : t.kind === 'txt' ? 'txt 문서' : '세션 차례' }),
         h('span', { textContent: t.session }), liveTag(t.live), h('span', { textContent: when(t.mtime) + ' 갱신' })),
       t.now && !doneNow ? h('div', { className: 'nowline' }, h('b', { textContent: '지금' }), t.now) : null),
-    h('div', { className: 'actions' }, ...(t.kind === 'task' && !R ? [
-      h('button', { type: 'button', textContent: '원문 편집', onclick: () => renderRaw() }),
+    h('div', { className: 'actions' }, ...(t.kind === 'task' ? [
+      doneNow ? null : h('button', { type: 'button', className: 'bell' + (t.bell ? ' on' : ''), textContent: t.bell ? '🔔 끝나면 알림 켜짐' : '🔔 끝나면 알림',
+        title: t.bell ? '누르면 끕니다' : '이 작업이 끝으로 바뀌면 슬랙 DM 으로 한 번 알립니다',
+        onclick: async () => { cur = await api('/api/bell', { id: t.id, on: !t.bell }); await refreshList(); renderTask(); } }),
+      coarse ? null : h('button', { type: 'button', textContent: '원문 편집', onclick: () => renderRaw() }),
       h('button', { type: 'button', textContent: doneNow ? '다시 진행' : '끝으로', onclick: async () => { cur = await api('/api/status', { id: t.id, done: !doneNow }); await refreshList(); renderTask(); } }),
     ] : [])));
   const out = [head];
-  if (R && R.mode === 'session' && R.hub) out.unshift(h('a', { href: R.hub, target: '_blank', rel: 'noopener', textContent: '← Task Board 목록(모든 PC·세션)' }));
-  if (HUB) out.push(h('div', { className: 'banner' }, h('span', { textContent: `${t.pc} · ${shortSession(t.session)} — ${when(t.updated)} 기준(세션 아티팩트에서 [최신으로]를 누르면 바뀝니다). 답은 각 질문의 '답하기'(작업 아티팩트)에서.` }),
-    t.url ? h('a', { className: 'answer-link', href: t.url, target: '_blank', rel: 'noopener', textContent: '작업 아티팩트 ↗' }) : null));
-  else if (R) {   // 아티팩트는 [최신으로]를 눌렀을 때만 다시 올라온다(11-10). [최신으로] = 그 세션에게 지금 문서로 올려 달라는 요청
-    const msg = h('span', { textContent: `PC ${R.pc} · ${shortSession(R.session)} 의 작업 — 문서 ${when(R.at)} 기준. [최신으로]를 누르면 세션이 지금 문서로 다시 올립니다.` });
-    const btn = h('button', { type: 'button', textContent: '최신으로', title: '이 세션이 PC 문서로 다시 올립니다 — 세션이 다른 일 중이면 늦을 수 있음' });
-    btn.onclick = async () => {
-      btn.disabled = true;
-      try {
-        if (!comments) throw new Error('이 화면에선 쓸 수 없습니다(댓글 권한)');
-        const can = await comments.canSendToClaude().catch(() => 'off');
-        if (can !== 'available') throw new Error(why[can] || can);
-        await comments.sendToClaude({ anchor: await comments.anchorFor($('#page')), text: `[board sync] ${cur.id}\n최신으로 다시 올려 주세요 — board push ${cur.id} --now` });
-        msg.textContent = '요청했습니다 — 10~20초 뒤 화면이 새 내용으로 다시 열립니다.';
-      } catch (e) { msg.textContent = '실패: ' + e.message; btn.disabled = false; }
-    };
-    out.push(h('div', { className: 'banner' }, msg, btn));
-  }
-  else if (t.kind === 'task' && !doneNow && !t.listening)
+  if (t.kind === 'task' && !doneNow && !t.listening)
     out.push(h('div', { className: 'banner' }, h('span', { textContent: (t.unread ? '보낸 것이 아직 안 읽혔습니다 — ' : '') +
       '이 세션은 지금 듣고 있지 않아 [보내기]해도 바로 깨어나지 않습니다(PC 메모리가 모자라면 세션의 대기가 꺼집니다). 그 세션 채팅에 "Task Board 봐", 또는 아무 세션에 "Task Board 깨워 줘"라고 해 주세요.' })));
   if (t.kind === 'txt') {
@@ -488,7 +421,7 @@ function renderTask() {
         const card = h('section', { className: 'item', id: 'q-메모' }, h('div', { className: 'head' }, h('span', { className: 'qt', textContent: '질문과 상관없는 말 · 이미지' })));
         if (b.desc) card.append(h('div', { className: 'body' }, md(b.desc, t.id)));
         if (b.entries.length) card.append(thread(b.entries, t.id));
-        card.append(h('div', { className: 'answer' }, HUB ? answerLink() : editor('memo', '', t.id, '세션에게 하고 싶은 말 — 텍스트·이미지',
+        card.append(h('div', { className: 'answer' }, editor('memo', '', t.id, '세션에게 하고 싶은 말 — 텍스트·이미지',
           text => api('/api/answer', { id: t.id, item: '메모', text }), text => api('/api/answer', { id: t.id, item: '메모', text, send: true }))));
         out.push(card);
       }
@@ -514,28 +447,34 @@ function renderRaw() {
 }
 
 function renderDone() {
-  view = 'done'; renderTabs();
+  view = 'done'; renderTabs(); show('task');
   const done = tasks.filter(t => t.status === '끝').sort((a, b) => b.mtime - a.mtime);
-  $('#page').replaceChildren(h('h1', { textContent: '끝난 작업' }),
-    done.length ? h('div', { className: 'list' }, done.map(t => h('button', { type: 'button', onclick: () => open(t.id) },
+  $('#page').replaceChildren(backBtn(), h('h1', { textContent: '끝난 작업' }),
+    done.length ? h('div', { className: 'list' }, done.map(t => h('button', { type: 'button', onclick: () => go(t.id) },
       h('span', { className: 'when', textContent: when(t.mtime) }), h('span', { textContent: t.title }), h('span', { className: 'who', textContent: shortSession(t.session) }))))
       : h('p', { className: 'empty', textContent: '아직 없습니다.' }));
 }
 $('#doneBtn').onclick = renderDone;
-if (R) $('#doneBtn').hidden = true;   // 바깥 화면엔 진행 중 작업만 싣는다
+$('#outBtn').onclick = async e => {   // 한 번 더 눌러야 — 실수로 눌러 폰이 다 풀리지 않게
+  const b = e.currentTarget;
+  if (!b.dataset.armed) { b.dataset.armed = '1'; b.textContent = '한 번 더 누르면 로그아웃'; setTimeout(() => { delete b.dataset.armed; b.textContent = '모든 기기 로그아웃'; }, 4000); return; }
+  await api('/api/logout-all', {}); location.reload();
+};
 
 (async () => {
-  if (hubReady) await hubReady;
   tasks = await api('/api/tasks');
   const want = decodeURIComponent(location.hash.slice(1));
   const first = tasks.find(t => t.id === want) || sorted()[0];
-  if (first) await open(first.id); else { renderTabs(); $('#page').replaceChildren(h('p', { className: 'empty', textContent: '올라온 작업이 없습니다.' })); }
-  if (!R) setInterval(refreshList, 2000);
+  if (narrow.matches && !want) { renderTabs(); show('list'); }   // 폰은 목록부터
+  else if (first) await open(first.id); else { renderTabs(); $('#page').replaceChildren(h('p', { className: 'empty', textContent: '올라온 작업이 없습니다.' })); }
+  setInterval(refreshList, 2000);
 })();
-// 보는 중 신호 — 이 창이 보이고 포커스일 때만. 서버는 12초 안에 신호가 있으면 PC 알림을 안 띄운다
-function beat() { if (R) return; if (document.visibilityState === 'visible' && document.hasFocus()) fetch('/api/presence', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {}); }
-setInterval(beat, 5000); addEventListener('focus', beat); document.addEventListener('visibilitychange', beat); beat();
-addEventListener('hashchange', () => { const id = decodeURIComponent(location.hash.slice(1)); if (id && (!cur || id !== cur.id)) open(id); });
+function route() {
+  const id = decodeURIComponent(location.hash.slice(1));
+  if (!id) { if (narrow.matches) show('list'); return; }
+  if (!cur || id !== cur.id) open(id); else show('task');
+}
+addEventListener('popstate', route); addEventListener('hashchange', route);
 </script>
 </body>
 </html>

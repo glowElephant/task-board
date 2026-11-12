@@ -5,22 +5,21 @@
 그 자리에 고쳐 넣을 뿐 상태를 따로 갖지 않는다. 사용자가 [보내기]를 누르면 <작업>/.sent 가 바뀌고,
 서버가 그 작업 세션에 채널(이 서버의 /mcp)로 바로 넣는다. 채널 없이 띄운 세션은 `board wait` 로 기다린다.
 
-  board serve                               화면 서버 (127.0.0.1:BOARD_PORT, 암호를 걸면 다른 PC 도) + 채널 MCP(/mcp)
+  board serve                               화면 서버 (127.0.0.1:BOARD_PORT) + 채널 MCP(/mcp)
+                                            + 슬랙을 설정하면 밖에서 보는 문(127.0.0.1:BOARD_PUBLIC_PORT — Cloudflare 터널이 붙는다)
   board new <작업> --title T --session S    작업 문서 만들기 — 마지막 줄이 board wait 를 걸지 말지 알려 준다
   board wait <작업>... [--max 분]           (채널 없는 세션만) [보내기]까지 대기 — Bash run_in_background 로 건다
-                                            exit 0 = 보냄(읽고 반영) · 3 = 시간 초과(다시 건다) · 4 = 사용자 자리 비움(폰 푸시 후 다시 건다)
-                                            · 5 = 이 세션은 채널이 있어 안 기다림(다시 걸지 않는다)
-  board done <작업>                         끝으로 표시 (목록 '끝난 작업' 으로)
+                                            exit 0 = 보냄(읽고 반영) · 3 = 시간 초과(다시 건다) · 5 = 이 세션은 채널이 있어 안 기다림
+  board done <작업>                         끝으로 표시 (목록 '끝난 작업' 으로) — 🔔 를 켠 작업이면 슬랙 DM 이 간다
   board list                                작업 목록
   board url [<작업>]                        화면 주소
 
 설정: 환경변수 > ~/.config/board/env (KEY=VALUE). BOARD_DIR(기본 ~/board) · BOARD_PORT(기본 8770) ·
 BOARD_EXTRA(옛 txt 문서 폴더, os.pathsep 로 여럿 — 탭으로 보여 주기만 한다) ·
-BOARD_NOTIFY(0 이면 PC 알림 끔) · BOARD_AWAY_MIN(입력 없이 몇 분이면 자리 비움, 기본 30) ·
-BOARD_PASSWORD(걸면 다른 PC 에서도 <이 PC IP>:BOARD_PORT 로 연다 — 암호를 넣어야 보인다. 없으면 127.0.0.1 만).
+SLACK_BOT_TOKEN + BOARD_SLACK_EMAIL(밖에서 볼 때 로그인 코드와 🔔 끝 알림을 그 사람 슬랙 DM 으로 — 둘 다 있어야 밖의 문이 열린다) ·
+BOARD_PUBLIC_PORT(기본 BOARD_PORT+1) · BOARD_PUBLIC_URL(슬랙 알림 링크, 예 https://board.example.com).
 """
 import argparse
-import base64
 import collections
 import datetime
 import hashlib
@@ -33,8 +32,8 @@ import os
 import pathlib
 import queue
 import re
+import secrets
 import shutil
-import socket
 import subprocess
 import sys
 import threading
@@ -52,7 +51,7 @@ def _config():
         for ln in cfg.read_text(encoding="utf-8").splitlines():
             k, sep, v = ln.partition("=")
             if sep and not k.strip().startswith("#"):
-                vals[k.strip()] = v.strip()
+                vals[k.strip()] = v.strip().strip("'\"")   # 다른 .env 에서 옮겨 온 줄은 따옴표가 있다
     vals.update({k: v for k, v in os.environ.items() if k.startswith("BOARD_")})
     return vals
 
@@ -61,21 +60,29 @@ CFG = _config()
 BOARD = pathlib.Path(CFG.get("BOARD_DIR") or HOME / "board").expanduser()
 PORT = int(CFG.get("BOARD_PORT") or 8770)
 EXTRA = [pathlib.Path(p).expanduser() for p in (CFG.get("BOARD_EXTRA") or "").split(os.pathsep) if p]
-NOTIFY = (CFG.get("BOARD_NOTIFY") or "1") != "0"
-AWAY_MIN = float(CFG.get("BOARD_AWAY_MIN") or 30)
 WEB = pathlib.Path(__file__).resolve().parent / "web"
-HUB = CFG.get("BOARD_HUB", "")              # 목록 아티팩트 주소 — 비면 아티팩트로 안 내보낸다
-PC = CFG.get("BOARD_PC") or socket.gethostname()
-PASSWORD = CFG.get("BOARD_PASSWORD", "")    # 다른 PC 에서 볼 때 암호 — 비면 이 PC 에서만 열린다
-PASS_COOKIE = hashlib.sha256(("board:" + PASSWORD).encode()).hexdigest() if PASSWORD else ""
-_fails = {}                                 # 다른 PC IP → (틀린 횟수, 막힌 끝 시각) — 5번 틀리면 10분
-LOGIN = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Task Board</title><style>body{font:16px system-ui,sans-serif;background:#f4f5f7;color:#222;display:grid;place-items:center;height:100vh;margin:0}
-form{background:#fff;padding:28px;border-radius:10px;box-shadow:0 2px 12px #0002;display:grid;gap:12px;width:min(300px,85vw)}
-input,button{font:inherit;padding:10px;border-radius:6px;border:1px solid #ccc}button{background:#2d6cdf;color:#fff;border:0}
-p{margin:0;color:#c33;font-size:14px}</style>
-<form method="post" action="/login"><b>Task Board</b><input type="password" name="pw" placeholder="암호" autofocus>
-<p><!--e--></p><button>열기</button></form>"""
+SLACK_TOKEN = CFG.get("SLACK_BOT_TOKEN", "")   # 운영보드 슬랙 봇 토큰을 같이 쓴다(users:read.email · chat:write)
+SLACK_EMAIL = CFG.get("BOARD_SLACK_EMAIL", "")  # 코드·알림을 받을 사람 — 회사 메일로 슬랙 계정을 찾는다
+PUBLIC_PORT = int(CFG.get("BOARD_PUBLIC_PORT") or PORT + 1)
+PUBLIC_URL = CFG.get("BOARD_PUBLIC_URL", "").rstrip("/")
+LOGINS = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "board" / "logins.json"
+KEEP = 90 * 86400                              # 한 번 로그인하면 3달(11-12 사용자 "최대 3달동안")
+_auth = {"code": "", "exp": 0.0, "tries": 0, "sent": []}   # 지금 코드(sha256)·만료·틀린 횟수·보낸 시각
+_auth_lock = threading.Lock()
+_fails = {}                                    # 밖의 IP → (틀린 횟수, 막힌 끝 시각) — 5번 틀리면 10분
+_LOOK = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Task Board</title><style>body{font:16px system-ui,sans-serif;background:#f4f5f7;color:#222;display:grid;place-items:center;min-height:100vh;margin:0}
+main{background:#fff;padding:28px;border-radius:10px;box-shadow:0 2px 12px #0002;display:grid;gap:12px;width:min(320px,88vw)}
+form{display:grid;gap:12px}input,button{font:inherit;padding:11px;border-radius:6px;border:1px solid #ccc}
+input{font-size:22px;letter-spacing:.3em;text-align:center}button{background:#d9480f;color:#fff;border:0;font-weight:600}
+button.link{background:none;color:#1d5fd1;padding:0;font-weight:400}span{color:#555;font-size:14px}p{margin:0;color:#c33;font-size:14px}
+@media (prefers-color-scheme:dark){body{background:#13161b;color:#e5e8ee}main{background:#1b1f26}span{color:#98a2b3}input{background:#13161b;color:#e5e8ee;border-color:#2d333d}}</style>
+<main><b>Task Board</b>"""
+LOGIN = _LOOK + """<span>슬랙 DM 으로 6자리 코드를 보냅니다.</span><p><!--e--></p>
+<form method="post" action="/login/code"><button>슬랙으로 코드 받기</button></form></main>"""
+CODE = _LOOK + """<span>슬랙 DM 으로 온 6자리 코드 — 5분 안에 넣어 주세요.</span>
+<form method="post" action="/login"><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" autofocus>
+<p><!--e--></p><button>열기</button></form><form method="post" action="/login/code"><button class="link">코드 다시 받기</button></form></main>"""
 
 FM = re.compile(r"\A---\n(.*?)\n---\n?", re.S)
 ITEM = re.compile(r"^###\s*\[([ ~vV])\]\s*([^\s.]+)\.?\s*(.*)$")
@@ -158,7 +165,7 @@ _live = {"at": 0.0, "v": {}}
 
 def live():
     """sid → 'busy'·'idle' — Claude Code 가 sessions/<pid>.json 에 적는 status(살아 있는 pid 만). 3초 캐시.
-    세션 단위다 — 일하는 중이어도 이 작업이 아닐 수 있다. 아티팩트(찍어 둔 사진)엔 안 그린다."""
+    세션 단위다 — 일하는 중이어도 이 작업이 아닐 수 있다."""
     if time.time() - _live["at"] > 3:
         v = {}
         for f in pathlib.Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude").glob("sessions/*.json"):
@@ -331,7 +338,8 @@ def summary(tid):
             "mine": sum(i["turn"] == "me" for i in items), "waiting": sum(i["turn"] == "claude" for i in items),
             "asks": [f"{i['id']}. {i['title']}" for i in items if i["turn"] == "me"],
             "listening": tid in listeners() or bool(chan_targets(meta)), "unread": unread(d), "mtime": f.stat().st_mtime,
-            "now": doing(brief(body)), "brief": brief(body)[:600], "live": live().get(meta.get("sid", ""))}
+            "now": doing(brief(body)), "brief": brief(body)[:600], "live": live().get(meta.get("sid", "")),
+            "bell": (d / ".bell").exists(), "local": is_local(meta)}
 
 
 def all_ids():
@@ -394,6 +402,79 @@ def stamp_all(first=False):
 
 def send(d, items):
     (d / ".sent").write_text(json.dumps({"at": now(), "items": items}, ensure_ascii=False), encoding="utf-8")
+
+
+def is_local(meta):
+    """문서 머리 `local: yes` — 회사 내부 자료(결재 번호·금액·사람 이름 등)가 있어 밖에서 보는 문(터널)으로는 안 보여 주는 작업.
+    2026-11-04 회사 결재 문서를 다루는 작업에서 요청됨(그땐 아티팩트로 안 보내기). 이 PC 화면엔 그대로 보인다."""
+    return meta.get("local", "").lower() in ("yes", "true", "1", "예")
+
+
+# ── 슬랙: 밖에서 볼 때 로그인 코드 · 🔔 끝 알림 ──────────────────────────────
+_slack = {}
+
+
+def slack(text):
+    """BOARD_SLACK_EMAIL 의 슬랙 DM 으로 보낸다 — 운영보드 로그인과 같은 길(users.lookupByEmail → chat.postMessage)."""
+    if not (SLACK_TOKEN and SLACK_EMAIL):
+        raise RuntimeError("슬랙 설정 없음(SLACK_BOT_TOKEN · BOARD_SLACK_EMAIL)")
+
+    def call(method, **params):
+        req = urllib.request.Request("https://slack.com/api/" + method, data=urllib.parse.urlencode(params).encode(),
+                                     headers={"Authorization": "Bearer " + SLACK_TOKEN})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            j = json.load(r)
+        if not j.get("ok"):
+            raise RuntimeError(f"슬랙 {method}: {j.get('error')}")
+        return j
+    if "uid" not in _slack:
+        _slack["uid"] = call("users.lookupByEmail", email=SLACK_EMAIL)["user"]["id"]
+    call("chat.postMessage", channel=_slack["uid"], text=text)
+
+
+_rang = {}   # 작업 → 마지막으로 보내 본 시각 — 슬랙이 실패하면 1분 뒤 다시
+
+
+def ring_done():
+    """🔔 를 누른 작업(`.bell`)이 끝이 되면 슬랙 DM 한 번 보내고 `.bell` 을 지운다 — chan_loop 가 돈다.
+    지금 알림은 이것 하나뿐이다(11-12 사용자 "아예 알림빼고 … 알림버튼 눌러서 그 테스크 끝나면 알림오도록")."""
+    for f in list(BOARD.glob("*/.bell")):
+        d = f.parent
+        try:
+            meta, body = split((d / "task.md").read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            f.unlink(missing_ok=True)
+            continue
+        if meta.get("status", "") not in DONE or time.time() - _rang.get(d.name, 0) < 60:
+            continue
+        _rang[d.name] = time.time()
+        try:
+            slack(f"✅ Task Board · {meta.get('title') or d.name} — 끝났습니다\n{doing(brief(body))}\n{url(d.name, public=True)}")
+            f.unlink(missing_ok=True)
+            print(f"[🔔] {d.name} 슬랙 보냄", flush=True)
+        except (OSError, RuntimeError, ValueError, KeyError) as e:
+            print(f"[🔔] {d.name}: {e}", flush=True)
+
+
+def _logins():
+    """로그인한 기기 — sha256(쿠키 값) → 만료 시각. 쿠키 값 자체는 어디에도 남기지 않는다."""
+    try:
+        v = json.loads(LOGINS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {k: e for k, e in v.items() if e > time.time()}
+
+
+def _save_logins(v):
+    LOGINS.parent.mkdir(parents=True, exist_ok=True)
+    tmp = LOGINS.with_name("." + LOGINS.name + ".tmp")
+    tmp.write_text(json.dumps(v), encoding="utf-8")
+    tmp.chmod(0o600)
+    os.replace(tmp, LOGINS)
+
+
+def logged_in(token):
+    return bool(token) and hashlib.sha256(token.encode()).hexdigest() in _logins()
 
 
 # ── 채널: [보내기]를 세션에 바로 넣는다 ──────────────────────────────────────
@@ -515,41 +596,30 @@ def _chan_put(hits, tid, content):
     return sent
 
 
-def deliver(away=None):
-    """안 읽힌 [보내기]를 그 작업 세션에 넣고 읽음 처리. 채널이 없는 세션 것은 그대로 둔다(board wait 가 받는다).
-    away(자리 비움일 때의 presence)를 주면 폰 알림 할 일도 넣는다 — 채널 세션엔 board wait exit 4 가 없어서."""
+def deliver():
+    """안 읽힌 [보내기]를 그 작업 세션에 넣고 읽음 처리. 채널이 없는 세션 것은 그대로 둔다(board wait 가 받는다)."""
     for tid in all_ids():
         if tid.startswith("txt:"):
             continue
         try:
             f, d = resolve(tid)
-            new = unread(d)
-            if not new and not away:
+            if not unread(d):
                 continue
             hits = chan_targets(split(f.read_text(encoding="utf-8", errors="replace"))[0])
-            if not hits:
-                continue
-            if new and (sent := _chan_put(hits, tid, report_text(tid, d, channel=True))):
+            if hits and (sent := _chan_put(hits, tid, report_text(tid, d, channel=True))):
                 (d / ".seen").write_text(now(), encoding="utf-8")
                 print(f"[채널] {tid} → {sent}곳", flush=True)
-            if away and (due := away_due({tid: d}, away)):
-                _chan_put(hits, tid, "[자리 비움] 사용자가 자리를 비웠고 이 작업에 내 차례가 남아 있다 — "
-                          "PushNotification(status=proactive) 으로 아래 한 줄을 그대로 보낸다. board wait 는 걸지 않는다.\n"
-                          f"Task Board · {due[0][0][:40]}: 내 차례 {due[0][1]}건")
-                print(f"[채널] {tid} 자리 비움 알림", flush=True)
         except (KeyError, OSError, ValueError) as e:
             print(f"[채널] {tid}: {e}", flush=True)
 
 
-def chan_loop(interval=1.5, away_every=20):
-    n = 0
+def chan_loop(interval=1.5):
     while True:
         time.sleep(interval)
-        n += 1
         try:
-            p = presence() if n % away_every == 0 else None   # 자리 비움은 분 단위라 30초마다면 된다(gdbus 를 덜 부른다)
-            deliver(p if p and p["state"] == "away" else None)
+            deliver()
             stamp_all()
+            ring_done()
             with _chans_lock:
                 for m in [m for m, c in _chans.items() if c["q"] is None and not pathlib.Path(f"/proc/{c['pid']}").exists()]:
                     del _chans[m]
@@ -574,40 +644,92 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def gate(self, path):
-        """이 PC 는 그대로. 다른 PC 는 암호 쿠키가 있어야 하고, 채널(/mcp)은 끝까지 이 PC 세션만 —
-        [보내기]가 세션에 '사용자 말'로 들어가므로 같은 망의 아무나 세션을 부리게 두면 안 된다."""
-        if self.client_address[0].startswith("127."):
-            return True
-        if path in ("/mcp", "/api/channels"):
-            self.reply({"error": "이 PC 에서만"}, code=403)
-            return False
+    def public(self):
+        """밖에서 보는 문(BOARD_PUBLIC_PORT)으로 온 요청인가 — 그 문은 Cloudflare 터널만 붙는다(127.0.0.1 에만 연다)."""
+        return getattr(self.server, "public", False)
+
+    def ip(self):
+        return (self.headers.get("Cf-Connecting-Ip") if self.public() else None) or self.client_address[0]
+
+    def cookie(self):
         c = http.cookies.SimpleCookie()
         try:
             c.load(self.headers.get("Cookie") or "")
         except http.cookies.CookieError:
-            pass
-        if PASS_COOKIE and "board" in c and hmac.compare_digest(c["board"].value, PASS_COOKIE):
+            return ""
+        return c["board"].value if "board" in c else ""
+
+    def page(self, tpl, msg="", code=200):
+        self.reply(tpl.replace("<!--e-->", msg).encode(), "text/html; charset=utf-8", code=code)
+
+    def gate(self, path):
+        """이 PC 문(BOARD_PORT, 127.0.0.1 만)은 그대로. 밖의 문은 슬랙 코드로 로그인한 기기만, 채널(/mcp)은 로그인해도 안 된다 —
+        [보내기]가 세션 15개에 '사용자 말'로 들어가고 세션은 이 PC 에서 명령을 실행한다."""
+        if not self.public():
+            return True
+        if path in ("/mcp", "/api/channels"):
+            self.reply({"error": "이 PC 에서만"}, code=403)
+            return False
+        origin = urllib.parse.urlparse(self.headers.get("Origin") or "").netloc
+        if self.command == "POST" and origin and origin not in (self.headers.get("Host"), urllib.parse.urlparse(PUBLIC_URL).netloc):
+            self.reply({"error": "다른 사이트에서 온 요청"}, code=403)   # 쿠키가 SameSite=Lax 라 원래 안 실리지만 한 겹 더
+            return False
+        if logged_in(self.cookie()):
             return True
         if path in ("/", "/index.html"):
-            self.reply(LOGIN.encode(), "text/html; charset=utf-8")
+            self.page(LOGIN)
         else:
-            self.reply({"error": "암호가 필요합니다 — 화면을 새로고침해 주세요"}, code=401)
+            self.reply({"error": "로그인이 필요합니다 — 화면을 새로고침해 주세요"}, code=401)
         return False
 
+    def login_code(self):
+        """슬랙 DM 으로 6자리 코드 — 1분에 한 번, 1시간에 10번까지(아무나 눌러 슬랙을 울리지 못하게)."""
+        t = time.time()
+        with _auth_lock:
+            sent = [s for s in _auth["sent"] if t - s < 3600]
+            if sent and t - sent[-1] < 60:
+                return self.page(CODE, "방금 보냈습니다 — 슬랙 DM 을 확인해 주세요")
+            if len(sent) >= 10:
+                return self.page(LOGIN, "1시간에 10번까지입니다 — 잠시 뒤 다시", 429)
+            code = f"{secrets.randbelow(10 ** 6):06d}"
+            try:
+                slack(f"Task Board 로그인 코드: {code} (5분 안에 입력). 직접 요청하지 않았다면 무시하세요 — 코드 없이는 못 들어옵니다.")
+            except (OSError, RuntimeError, ValueError, KeyError) as e:
+                print(f"[로그인] 슬랙 실패: {e}", flush=True)
+                return self.page(LOGIN, "슬랙으로 못 보냈습니다 — PC 의 서버 로그를 봐 주세요", 502)
+            _auth.update(code=hashlib.sha256(code.encode()).hexdigest(), exp=t + 300, tries=0, sent=sent + [t])
+        self.page(CODE)
+
     def login(self, raw):
-        ip = self.client_address[0]
+        """코드가 맞으면 이 기기에 3달짜리 쿠키. 한 코드에 5번 틀리면 그 코드는 버리고, 같은 IP 가 5번 틀리면 10분 막는다."""
+        ip, t = self.ip(), time.time()
         n, until = _fails.get(ip, (0, 0))
-        page = lambda msg, code: self.reply(LOGIN.replace("<!--e-->", msg).encode(), "text/html; charset=utf-8", code=code)
-        if time.time() < until:
-            return page("여러 번 틀려 10분 동안 막혔습니다", 429)
-        pw = dict(urllib.parse.parse_qsl(raw.decode(errors="replace"))).get("pw", "")
-        if PASSWORD and hmac.compare_digest(pw.encode(), PASSWORD.encode()):
-            _fails.pop(ip, None)
-            return self.reply(b"", code=303, headers={
-                "Location": "/", "Set-Cookie": f"board={PASS_COOKIE}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000"})
-        _fails[ip] = (0, time.time() + 600) if n + 1 >= 5 else (n + 1, 0)
-        return page("암호가 틀렸습니다", 401)
+        if t < until:
+            return self.page(CODE, "여러 번 틀려 10분 동안 막혔습니다", 429)
+        code = re.sub(r"\D", "", dict(urllib.parse.parse_qsl(raw.decode(errors="replace"))).get("code", ""))
+        with _auth_lock:
+            ok = bool(_auth["code"]) and t < _auth["exp"] and hmac.compare_digest(hashlib.sha256(code.encode()).hexdigest(), _auth["code"])
+            if ok:
+                _auth["code"] = ""
+            else:
+                _auth["tries"] += 1
+                if _auth["tries"] >= 5:
+                    _auth["code"] = ""
+            if ok:
+                tok = secrets.token_urlsafe(32)
+                v = _logins()
+                v[hashlib.sha256(tok.encode()).hexdigest()] = t + KEEP
+                _save_logins(v)
+        if not ok:
+            _fails[ip] = (0, t + 600) if n + 1 >= 5 else (n + 1, 0)
+            return self.page(CODE, "코드가 틀렸거나 지났습니다", 401)
+        _fails.pop(ip, None)
+        self.reply(b"", code=303, headers={
+            "Location": "/", "Set-Cookie": f"board={tok}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={KEEP}"})
+
+    def hidden(self, tid):
+        """밖의 문에선 `local: yes` 작업을 없는 작업처럼."""
+        return self.public() and not tid.startswith("txt:") and is_local(split(resolve(tid)[0].read_text(encoding="utf-8", errors="replace"))[0])
 
     def mcp_post(self, raw):
         """board MCP — 도구 없이 채널만. 처음 붙을 때 Claude Code 가 X-Board-Pid(board channel-headers)로 자기 pid 를 알린다."""
@@ -692,14 +814,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.reply([[m, c["pid"]] for m, c in _chans.items() if c["q"] is not None])
             if u.path in ("/", "/index.html"):
                 return self.reply((WEB / "index.html").read_bytes(), "text/html; charset=utf-8")
-            if u.path == "/api/presence":
-                return self.reply(presence())
             if u.path == "/api/tasks":
-                return self.reply([summary(t) for t in all_ids()])
+                return self.reply([s for s in map(summary, all_ids()) if not (self.public() and s.get("local"))])
             if u.path == "/api/task":
+                if self.hidden(q["id"]):
+                    raise KeyError(q["id"])
                 return self.reply(detail(q["id"]))
             if u.path.startswith("/files/"):
                 tid, _, rel = urllib.parse.unquote(u.path[len("/files/"):]).partition("/")
+                if self.hidden(tid):
+                    raise KeyError(tid)
                 _, d = resolve(tid)
                 f = (d / rel).resolve()
                 if d.resolve() in f.parents and f.is_file():
@@ -712,19 +836,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         q = dict(urllib.parse.parse_qsl(u.query))
         n = int(self.headers.get("Content-Length") or 0)
-        if u.path == "/login":
-            return self.login(self.rfile.read(min(n, 4096)))
+        if u.path in ("/login", "/login/code"):
+            raw = self.rfile.read(min(n, 4096))
+            if not self.public():
+                return self.reply(b"", code=303, headers={"Location": "/"})
+            return self.login(raw) if u.path == "/login" else self.login_code()
         if not self.gate(u.path):
             return
         raw = self.rfile.read(n)
         try:
             if u.path == "/mcp":
                 return self.mcp_post(raw)
-            if u.path == "/api/presence":
-                _seen["beat"] = time.time()
-                _seen["at"] = 0.0
-                return self.reply(presence())
+            if u.path == "/api/logout-all":
+                with _auth_lock:
+                    _save_logins({})
+                return self.reply({"ok": True})
             if u.path == "/api/image":
+                if self.hidden(q["id"]):
+                    raise KeyError(q["id"])
                 _, d = resolve(q["id"])
                 ext = re.sub(r"[^a-z0-9]", "", q.get("ext", "png").lower())[:5] or "png"
                 (d / "img").mkdir(exist_ok=True)
@@ -733,8 +862,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply({"path": "img/" + name})
             body = json.loads(raw or b"{}")
             tid = body["id"]
+            if self.hidden(tid):
+                raise KeyError(tid)
             f, d = resolve(tid)
             text = f.read_text(encoding="utf-8", errors="replace")
+            if u.path == "/api/bell":
+                if d is None:
+                    raise KeyError("txt 문서엔 🔔 가 없습니다")
+                (d / ".bell").touch() if body.get("on") else (d / ".bell").unlink(missing_ok=True)
+                return self.reply(detail(tid))
             if u.path == "/api/raw":
                 if f.stat().st_mtime != body.get("mtime"):
                     return self.reply({"error": "그사이 문서가 바뀌었습니다 — 다시 불러온 뒤 고쳐 주세요"}, code=409)
@@ -756,130 +892,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.reply({"error": f"요청 오류: {e}"}, code=400)
 
 
-# ── 데스크톱 알림 ────────────────────────────────────────────────────────────
-
-def pending():
-    """지금 사용자 차례인 것 — 키가 새로 생기면 알린다(새 질문, 세션이 ⇒ 로 되물음, txt 에 빈 → 사용자 칸)."""
-    out = {}
-    for tid in all_ids():
-        try:
-            f, d = resolve(tid)
-            if d is None:
-                s = summary(tid)
-                for i in range(s["mine"]):
-                    out[f"{tid}#{i}"] = (tid, s["title"], "txt 문서", "")
-                continue
-            meta, body = split(f.read_text(encoding="utf-8", errors="replace"))
-        except (KeyError, OSError):
-            continue
-        if meta.get("status", "") in DONE:
-            continue
-        for b in parse(body):
-            if b["type"] == "item" and b["turn"] == "me":
-                out[f"{tid}#{b['id']}#{len(b['entries'])}"] = (tid, meta.get("title") or tid, meta.get("session", ""),
-                                                             f"{b['id']}. {b['title']}")
-    return out
-
-
-class Popups:
-    """GNOME 알림. gi(libnotify)가 있으면 누르면 그 작업 화면이 열린다, 없으면 notify-send 로 글만."""
-
-    def __init__(self):
-        self.keep = set()
-        try:
-            import gi
-            gi.require_version("Notify", "0.7")
-            from gi.repository import GLib, Notify
-            Notify.init("Task Board")
-            self.N, self.G = Notify, GLib
-            threading.Thread(target=GLib.MainLoop().run, daemon=True).start()
-        except (ImportError, ValueError):
-            self.N = None
-
-    def show(self, tid, head, body):
-        if self.N is None:
-            subprocess.run(["notify-send", "-u", "critical", "-a", "Task Board", head, body], check=False)
-            return
-
-        def go():
-            n = self.N.Notification.new(head, body, "dialog-question")
-            n.set_urgency(self.N.Urgency.CRITICAL)   # 방해 금지 중에도 배너로 뜬다(11-03 사용자 Q7 A). 누르거나 닫을 때까지 남는다
-            n.add_action("default", "열기", lambda *a: subprocess.Popen(["xdg-open", url(tid)]))
-            n.connect("closed", lambda *a: self.keep.discard(n))
-            self.keep.add(n)
-            n.show()
-            return False
-
-        self.G.idle_add(go)
-
-
-_seen = {"beat": 0.0, "away_since": None, "at": 0.0, "state": "desk"}
-
-
-def _gdbus(dest, path, method):
-    try:
-        out = subprocess.run(["gdbus", "call", "--session", "--dest", dest, "--object-path", path, "--method", method],
-                             capture_output=True, text=True, timeout=2).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    m = re.search(r"\((?:uint64 )?(\w+),\)", out)
-    return m.group(1) if m else None
-
-
-def presence():
-    """watching = Task Board 창을 보는 중 · desk = PC 앞(다른 일) · away = AWAY_MIN 분 넘게 키보드·마우스 입력 없음.
-    잠금은 따로 안 본다 — 잠그자마자 폰이 울리면 잠깐 자리 뜰 때도 울려서 30분 뒤부터로 했다(11-03 사용자).
-    잠겨 있어도 유휴 시간은 계속 쌓인다. GNOME 이 아니면 유휴를 못 읽어 desk 로 본다."""
-    t = time.time()
-    if t - _seen["at"] < 1.5:
-        return {"state": _seen["state"], "away_since": _seen["away_since"]}
-    idle = _gdbus("org.gnome.Mutter.IdleMonitor", "/org/gnome/Mutter/IdleMonitor/Core", "org.gnome.Mutter.IdleMonitor.GetIdletime")
-    idle_s = int(idle) / 1000 if idle and idle.isdigit() else 0
-    if idle_s >= AWAY_MIN * 60:
-        state = "away"
-    elif t - _seen["beat"] < 12:
-        state = "watching"
-    else:
-        state = "desk"
-    if state == "away" and _seen["away_since"] is None:
-        _seen["away_since"] = round(t - idle_s)
-    elif state != "away":
-        _seen["away_since"] = None
-    _seen.update(at=t, state=state)
-    return {"state": state, "away_since": _seen["away_since"]}
-
-
-def notify_loop(interval=3):
-    popups, prev = Popups(), pending()
-    while True:
-        time.sleep(interval)
-        try:
-            cur = pending()
-        except Exception:   # 알림이 서버를 죽이면 안 된다 — 다음 바퀴에 다시
-            continue
-        new = {}
-        for k, (tid, title, sess, q) in cur.items():
-            if k not in prev:
-                new.setdefault(tid, [title, sess, []])[2].append(q)
-        prev = cur
-        if new and presence()["state"] != "desk":   # 보고 있으면 화면 숫자로 충분, 자리 비움은 세션이 폰으로
-            continue
-        for tid, (title, sess, qs) in new.items():
-            who = re.sub(r"\s*\[[0-9a-f]+\]$", "", sess) or "Task Board"
-            popups.show(tid, f"내 차례 · {who}", "\n".join([title] + [q for q in qs if q]))
-
-
 def serve():
     global IN_SERVER
     IN_SERVER = True
     BOARD.mkdir(parents=True, exist_ok=True)
     stamp_all(first=True)
-    srv = http.server.ThreadingHTTPServer(("0.0.0.0" if PASSWORD else "127.0.0.1", PORT), Handler)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     threading.Thread(target=chan_loop, daemon=True).start()
-    if NOTIFY:
-        threading.Thread(target=notify_loop, daemon=True).start()
-    print(f"Task Board: http://localhost:{PORT}  (문서 {BOARD})"
-          + (f" · 다른 PC 는 http://<이 PC IP>:{PORT} (암호)" if PASSWORD else ""), flush=True)
+    msg = f"Task Board: http://localhost:{PORT}  (문서 {BOARD})"
+    if SLACK_TOKEN and SLACK_EMAIL:   # 밖의 문 — 슬랙 로그인이 없으면 열지 않는다(열어도 아무도 못 들어오지만)
+        pub = http.server.ThreadingHTTPServer(("127.0.0.1", PUBLIC_PORT), Handler)
+        pub.public = True
+        threading.Thread(target=pub.serve_forever, daemon=True).start()
+        msg += f" · 밖의 문 127.0.0.1:{PUBLIC_PORT}" + (f" → {PUBLIC_URL}" if PUBLIC_URL else "") + " (슬랙 코드 로그인)"
+    print(msg, flush=True)
     srv.serve_forever()
 
 
@@ -901,8 +927,9 @@ status: 진행 중
 """
 
 
-def url(tid=""):
-    return f"http://localhost:{PORT}/" + (("#" + urllib.parse.quote(tid)) if tid else "")
+def url(tid="", public=False):
+    base = PUBLIC_URL if public and PUBLIC_URL else f"http://localhost:{PORT}"
+    return base + "/" + (("#" + urllib.parse.quote(tid)) if tid else "")
 
 
 def cmd_new(a):
@@ -926,7 +953,7 @@ def report_text(tid, d, channel=False):
             out.append(f"  {b['id']}. {b['title']}\n    -> " + b["entries"][-1]["text"].replace("\n", "\n    -> "))
         if b["type"] == "memo" and MEMO in info.get("items", []) and b["entries"] and b["entries"][-1]["who"] == "me":
             out.append("  메모:\n    -> " + b["entries"][-1]["text"].replace("\n", "\n    -> "))
-    out.append("→ task.md 를 다시 읽고 질문마다 ⇒ 로 반영(결정된 건 [v]). PC 화면에서 보낸 것이라 아티팩트는 안 올린다."
+    out.append("→ task.md 를 다시 읽고 질문마다 ⇒ 로 반영(결정된 건 [v])."
                + (" 채널로 받았으니 board wait 는 걸지 않는다." if channel else " 그리고 board wait 를 다시 건다."))
     return "\n".join(out)
 
@@ -957,39 +984,9 @@ def cmd_wait(a):
                 report(t, d)
                 (d / ".seen").write_text(now(), encoding="utf-8")
             return 0
-        due = away_due(dirs)
-        if due:
-            print("[자리 비움] 사용자가 자리를 비웠고 내 차례가 남아 있다 — PushNotification(status=proactive) 으로 아래 한 줄을 보내고 board wait 를 다시 건다.")
-            print("Task Board · " + " / ".join(f"{title[:40]}: 내 차례 {n}건" for title, n in due))
-            return 4
         time.sleep(a.poll)
     print(f"{a.max}분 동안 [보내기] 없음 — board wait {' '.join(a.task)} 를 다시 건다.")
     return 3
-
-
-def away_due(dirs, p=None):
-    """자리 비움 동안 작업마다 한 번(내 차례가 늘면 다시) 폰으로 알릴 것. 서버가 꺼져 있으면 알리지 않는다.
-    p = presence() 결과(서버 안에서 부를 때), 없으면 서버에 묻는다."""
-    if p is None:
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/presence", timeout=2) as r:
-                p = json.load(r)
-        except (OSError, ValueError):
-            return []
-    if p.get("state") != "away":
-        return []
-    due = []
-    for t, d in dirs.items():
-        s = summary(t)
-        mark = d / ".pushed"
-        try:
-            last = json.loads(mark.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            last = {}
-        if s["status"] != "끝" and s["mine"] and (last.get("since") != p["away_since"] or s["mine"] > last.get("mine", 0)):
-            mark.write_text(json.dumps({"since": p["away_since"], "mine": s["mine"]}), encoding="utf-8")
-            due.append((s["title"], s["mine"]))
-    return due
 
 
 def cmd_done(a):
@@ -1012,179 +1009,18 @@ def cmd_orphans(a):
         print("안 읽힌 작업 없음")
 
 
-IMG_ONE, IMG_ALL = 3_000_000, 10_000_000
-
-
-def session_key(session):
-    """세션 아티팩트 키 — '버그 고치기 [756bdf]' → '756bdf'(이름이 바뀌어도 ref 는 그대로). ref 가 없으면 이름을 안전한 글자로."""
-    m = re.search(r"\[([0-9a-f]+)\]\s*$", session or "")
-    return m.group(1) if m else (re.sub(r"[^A-Za-z0-9_-]", "_", session or "unknown")[:60] or "unknown")
-
-
-def sess_key(tid):
-    """세션 아티팩트 묶음 키 — 문서 sid(다시 띄워도 그대로), 없으면 이름 옆 ref(sid 전 옛 문서).
-    ref 로만 묶으면 세션을 다시 띄울 때 ref 가 바뀌어 한 세션의 아티팩트가 둘로 갈라졌다(11-09 일괄 재시작)."""
-    meta = split(resolve(tid)[0].read_text(encoding="utf-8", errors="replace"))[0]
-    return meta.get("sid") or session_key(meta.get("session", ""))
-
-
-def session_tasks(key):
-    return [t for t in all_ids() if not t.startswith("txt:") and sess_key(t) == key and summary(t)["status"] != "끝"
-            and not local_only(resolve(t)[0])]
-
-
-def page_for(key, session, also=()):
-    """세션 아티팩트 한 장 — PC 화면과 같은 코드(web/index.html)에 그 세션의 진행 중 작업만 심는다(window.BOARD.mode='session').
-    세션마다 한 장인 이유(11-04 사용자 "같은 세션끼리만 두면 되잖아"): [보내기]는 아티팩트를 올린 세션만 깨우니 세션 단위면 충분하고,
-    작업마다 따로면 아티팩트가 너무 많아지고 처음 보내기 허락도 작업마다 묻는다. 사진은 data: 로(장당 3 MB · 합쳐 10 MB)."""
-    mine = session_tasks(key)
-    ids = list(dict.fromkeys(mine + [t for t in also if t not in mine]))
-    tasks, details, images, total = [], {}, {}, 0
-    for tid in ids:
-        d = detail(tid)
-        text = d.pop("raw")
-        tasks.append({k: v for k, v in d.items() if k != "blocks"})
-        details[tid] = d
-        folder = resolve(tid)[1]
-        for rel in sorted(set(re.findall(r"!\[[^\]]*\]\((img/[^)\s]+)\)", text))):
-            f = folder / rel
-            if f.is_file() and f.stat().st_size < IMG_ONE and total + f.stat().st_size < IMG_ALL:
-                total += f.stat().st_size
-                mime = mimetypes.guess_type(f.name)[0] or "image/png"
-                images[f"{tid}/{rel}"] = f"data:{mime};base64," + base64.b64encode(f.read_bytes()).decode()
-    data = {"mode": "session", "session": session, "hub": HUB, "pc": PC, "tasks": tasks, "details": details, "images": images, "at": time.time()}
-    page = (WEB / "index.html").read_text(encoding="utf-8")
-    name = re.sub(r"[<>&]", "", re.sub(r"\s*\[[0-9a-f]+\]$", "", session or ""))[:60]
-    page = page.replace("<title>Task Board</title>", f"<title>Task Board · {name}</title>", 1)
-    js = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
-    return page.replace("<script>\nconst $ =", "<script>window.BOARD = " + js + ";</script>\n<script>\nconst $ =", 1)
-
-
-def sess_state(key, upd=None, old=""):
-    """세션 아티팩트 기록(.sessions/<키>.json). 키 기록이 없고 옛 ref 기록(old)이 있으면 그것을 이어 쓴다 — 같은 아티팩트 주소 유지."""
-    f = BOARD / ".sessions" / (key + ".json")
-    o = BOARD / ".sessions" / (old + ".json")
-    if old and old != key and not f.exists() and o.is_file():
-        write(f, o.read_text(encoding="utf-8"))
-    try:
-        st = json.loads(f.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        st = {}
-    if upd is not None:
-        st.update(upd)
-        f.parent.mkdir(exist_ok=True)
-        write(f, json.dumps(st, ensure_ascii=False))
-    return st
-
-
-def row_id(tid):
-    """목록 저장소 문서 id — PC 이름을 붙여 다른 PC 의 같은 작업 이름과 안 겹치게. 허용 글자 밖(한글 등)은 ~xxxx 로."""
-    return re.sub(r"[^A-Za-z0-9_\-.]", lambda m: "~%04x" % ord(m.group()), f"{PC}__{tid}")[:200]
-
-
-def remote(d):
-    """작업 폴더의 .remote/ — 아티팩트 주소(url)·목록 줄 버전(version)·올린 시각(at)."""
-    try:
-        return json.loads((d / ".remote" / "state.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-
-
-def local_only(f):
-    """문서 머리 `local: yes` — 회사 내부 자료(결재 번호·금액·사람 이름 등)가 있어 아티팩트(claude.ai)로 안 보내는 작업.
-    2026-11-04 회사 결재 문서를 다루는 작업에서 요청됨."""
-    return split(f.read_text(encoding="utf-8", errors="replace"))[0].get("local", "").lower() in ("yes", "true", "1", "예")
-
-
-def changed(tid):
-    """마지막으로 아티팩트에 올린 뒤 문서가 바뀌었나. 처음 올리는 거면 None."""
-    f, d = resolve(tid)
-    at = remote(d).get("at")
-    return None if not remote(d).get("version") else f.stat().st_mtime > (at or 0)
-
-
-def cmd_push(a):
-    """세션 아티팩트(그 세션의 진행 중 작업 전부)·목록 줄을 내보낼 준비를 하고, 세션이 부를 도구 호출을 순서대로 찍는다.
-    올리는 때는 셋뿐이다(11-10 사용자 B): 작업이 처음 생길 때, [최신으로](`[board sync]`), 아티팩트에서 온 답을 반영했을 때(--now).
-    고칠 때마다 올리던 것(11-04)은 도구 호출 4번씩이라 모든 작업이 보드로 오면서 너무 많아졌다 — 그 밖엔 건너뛴다."""
-    if not HUB:
-        sys.exit("BOARD_HUB(목록 아티팩트 주소)가 설정에 없습니다 — ~/.config/board/env")
-    f, d = resolve(a.task)
-    if d is None:
-        sys.exit("txt 문서는 안 됩니다")
-    if local_only(f):
-        sys.exit(f"{a.task} 는 로컬 전용(local: yes)이라 아티팩트로 안 보냅니다.")
-    claim(f)
-    s = summary(a.task)
-    if not s["session"]:
-        sys.exit("문서 머리에 session: 이 없습니다 — '이름 [ref]' 를 넣고 다시")
-    key = sess_key(a.task)
-    ss = sess_state(key, old=session_key(s["session"]))
-    url = ss.get("url", "")
-    if url and changed(a.task) is not None and not a.now:
-        print(f"[push] 건너뜀 — {a.task} 는 이미 아티팩트에 있다. 아티팩트는 [최신으로]를 눌렀을 때만 다시 올린다(11-10 사용자 결정).\n"
-              f"  `[board sync]` 댓글이나 아티팩트에서 온 답을 반영한 뒤라면: board push {a.task} --now")
-        return print(wait_hint([a.task]))
-    # 같은 세션의 바뀐 작업 줄도 같이 — 화면은 늘 그 세션 전부를 지금 문서로 그리니 목록 줄도 맞춘다(끝낸 작업 포함)
-    tids = list(dict.fromkeys([a.task] + [t for t in session_tasks(key) if changed(t) is not False]
-                              + [t for t in all_ids() if not t.startswith("txt:") and sess_key(t) == key
-                                 and not local_only(resolve(t)[0]) and changed(t)]))
-    out = pathlib.Path(a.out).expanduser() if a.out else BOARD / ".sessions"
-    out.mkdir(parents=True, exist_ok=True)
-    page = out / f"{key}.html"
-    write(page, page_for(key, s["session"], also=[a.task]))   # 방금 끝낸 작업도 이번 한 번은 '끝'으로 보이게
-    writes = []
-    for t in tids:
-        st, td, ts = remote(resolve(t)[1]), resolve(t)[1], summary(t)
-        row = {"pc": PC, "task": t, "title": ts["title"], "session": ts["session"], "status": ts["status"],
-               "mine": ts["mine"], "waiting": ts["waiting"], "asks": ts["asks"][:5], "now": ts["now"], "brief": ts["brief"], "url": (url + "#" + t) if url else "", "updated": time.time(),
-               "blocks": detail(t)["blocks"]}   # 목록이 PC 화면처럼 오른쪽에 내용을 그린다(답은 세션 아티팩트에서)
-        (td / ".remote").mkdir(exist_ok=True)
-        write(td / ".remote" / "row.json", json.dumps(row, ensure_ascii=False))
-        w = {"op": "set", "collection": "tasks", "doc_id": row_id(t), "file_path": str(td / ".remote" / "row.json")}
-        if st.get("version"):
-            w["if_version"] = st["version"]
-        writes.append(w)
-    print(f"[push] {' '.join(tids)} — 세션 아티팩트({s['session']})·목록 줄. 아래 순서대로 부르세요.")
-    if url:   # 막 만든 아티팩트는 연결이 붙기 전 온 댓글을 놓칠 수 있다(11-04 실측) — 올릴 때마다 먼저 줍는다
-        print(f"0) ArtifactComments read: url={url} — 열린 스레드의 [board …] 중 문서에 아직 없는 것을 board reply 로 먼저 넣고 resolve")
-        print(f"1) Artifact publish: file_path={page}  url={url}")
-    else:
-        print(f'1) Artifact publish: file_path={page}  icon="checklist"  capabilities={{"comments": {{}}, "assets": {{}}}}  (이 세션의 첫 아티팩트)')
-        print(f"   → board pushed {' '.join(tids)} --url <결과 주소>   (세션 아티팩트 주소 기록 + 목록 줄 링크)")
-    if len(writes) == 1:
-        w = writes[0]
-        print(f"2) ArtifactData set: url={HUB}  collection=tasks  doc_id={w['doc_id']}  file_path={w['file_path']}"
-              + (f"  if_version={w['if_version']}" if "if_version" in w else "  (처음 — if_version 없이)"))
-    else:
-        print(f"2) ArtifactData batch: url={HUB}  writes={json.dumps(writes, ensure_ascii=False)}")
-    print(f"3) board pushed {' '.join(tids)} --version <결과 version{'(작업 순서대로)' if len(tids) > 1 else ''}>")
-    print("   버전이 안 맞아 거절되면 결과에 나온 현재 version 으로 2) 를 다시. 아티팩트가 없다고 나오면 board pushed <작업> --reset 뒤 다시 push.")
-    print(wait_hint([a.task]))
-
-
-def _set_cfg(key, val):
-    f = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "board" / "env"
-    f.parent.mkdir(parents=True, exist_ok=True)
-    lines = f.read_text(encoding="utf-8").splitlines() if f.is_file() else []
-    lines = [ln for ln in lines if not ln.startswith(key + "=")] + [f"{key}={val}"]
-    write(f, "\n".join(lines) + "\n")
-
-
 def cmd_setup(a):
-    """처음 한 번(여러 번 해도 같음) — 설정 파일 · board 명령 링크 · PC 화면(리눅스 systemd 사용자 서비스) · 목록 아티팩트 안내.
+    """처음 한 번(여러 번 해도 같음) — 설정 파일 · board 명령 링크 · PC 화면(리눅스 systemd 사용자 서비스) · 채널 MCP 등록.
     플러그인으로 깔았으면 세션 시작 훅이 이걸 안내한다. 이 PC 처럼 install.sh 로 깔면 install.sh 가 부른다."""
     here = pathlib.Path(__file__).resolve().parent
     cfgf = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "board" / "env"
     if not cfgf.is_file():
         cfgf.parent.mkdir(parents=True, exist_ok=True)
-        write(cfgf, f"BOARD_DIR={HOME / 'board'}\nBOARD_PORT=8770\n# 목록 아티팩트(모든 PC 의 작업) — board setup --hub <주소>\nBOARD_HUB=\n")
+        write(cfgf, f"BOARD_DIR={HOME / 'board'}\nBOARD_PORT=8770\n"
+                    "# 밖(폰)에서 보기 — 슬랙 코드 로그인 · 🔔 끝 알림. 둘 다 있으면 127.0.0.1:BOARD_PUBLIC_PORT 에 밖의 문이 열린다(터널을 붙인다)\n"
+                    "# SLACK_BOT_TOKEN=\n# BOARD_SLACK_EMAIL=\n# BOARD_PUBLIC_URL=https://board.example.com\n")
+        cfgf.chmod(0o600)
         print(f"설정 만듦: {cfgf}")
-    if a.hub:
-        _set_cfg("BOARD_HUB", a.hub)
-        print(f"목록 아티팩트: {a.hub}")
-    if a.pc:
-        _set_cfg("BOARD_PC", a.pc)
     bindir = pathlib.Path(os.environ.get("XDG_BIN_HOME") or HOME / ".local" / "bin")
     bindir.mkdir(parents=True, exist_ok=True)
     (here / "board.py").chmod(0o755)
@@ -1201,7 +1037,7 @@ def cmd_setup(a):
             subprocess.run(["systemctl", "--user", *cmd], check=False, capture_output=True)
         print(f"PC 화면: http://localhost:{PORT}  (사용자 서비스 board)")
     elif not a.no_server:
-        print(f"PC 화면은 수동 — `python3 {here / 'board.py'} serve` (리눅스가 아니면 자리 비움·PC 알림은 아직 안 됨). 아티팩트는 그대로 쓴다.")
+        print(f"PC 화면은 수동 — `python3 {here / 'board.py'} serve` ")
     if shutil.which("claude") and sys.platform.startswith("linux"):   # 채널은 /proc 로 세션을 찾는다 — 리눅스만
         spec = {"type": "http", "url": f"http://127.0.0.1:{PORT}/mcp", "headersHelper": f"{link} channel-headers"}
         subprocess.run(["claude", "mcp", "remove", CHAN, "-s", "user"], capture_output=True)
@@ -1210,90 +1046,6 @@ def cmd_setup(a):
         print(f"  세션을 `claude --dangerously-load-development-channels server:{CHAN}` 로 띄우면 [보내기]가 바로 들어온다(board wait 불필요).")
         print(f"  매번 붙이기 싫으면 래퍼를 PATH 맨 앞에(대화형 실행에만 붙인다, -p·하위 명령은 그대로) — ~/.bashrc 와 ~/.profile 끝에:\n"
               f'    [ -x "{here / "bin" / "claude"}" ] && PATH="{here / "bin"}:$PATH"')
-    hub = a.hub or _config().get("BOARD_HUB", "")
-    if not hub:
-        page = cfgf.parent / "hub.html"
-        a2 = argparse.Namespace(out=str(page))
-        cmd_hubpage(a2)
-        print("목록 아티팩트(밖에서 보기)가 아직 없습니다 — 세션이 이렇게 만든다(한 번만):")
-        print(f'  Artifact publish: file_path={page}  icon="checklist"  capabilities={{"db": {{}}}}')
-        print("  → board setup --hub <결과 주소>")
-
-
-def cmd_hubpage(a):
-    """목록 아티팩트 화면 — PC 화면과 같은 코드(web/index.html)를 목록 모드로. 데이터는 심지 않고 db tasks 를 실시간으로 읽는다.
-    화면 코드를 고쳤을 때만 다시 올린다(이 PC 의 목록 담당 세션이 BOARD_HUB 주소로 publish, capabilities={"db": {}})."""
-    page = (WEB / "index.html").read_text(encoding="utf-8")
-    page = page.replace("<script>\nconst $ =", "<script>window.BOARD = " + json.dumps({"mode": "hub", "hub": HUB}) + ";</script>\n<script>\nconst $ =", 1)
-    out = pathlib.Path(a.out).expanduser()
-    write(out, page)
-    print(out)
-
-
-def cmd_pushed(a):
-    if a.version and len(a.version) != len(a.task):
-        sys.exit(f"--version 은 작업 수({len(a.task)})만큼 — 작업 순서대로")
-    for i, t in enumerate(a.task):
-        f, d = resolve(t)
-        (d / ".remote").mkdir(exist_ok=True)
-        sess = sess_key(t)
-        st = remote(d)
-        if a.reset:
-            st.pop("version", None)
-            sess_state(sess, {"url": ""})
-        if a.url:
-            sess_state(sess, {"url": a.url})
-            rowf = d / ".remote" / "row.json"
-            if rowf.is_file():
-                row = json.loads(rowf.read_text(encoding="utf-8")); row["url"] = a.url + "#" + t
-                write(rowf, json.dumps(row, ensure_ascii=False))
-        if a.version:
-            st["version"] = a.version[i]
-        if a.url or a.version:
-            st["at"] = time.time()
-        write(d / ".remote" / "state.json", json.dumps(st))
-        print(f"기록함: {t} {st} · 세션 {sess_state(sess)}")
-
-
-def cmd_reply(a):
-    """바깥 화면(아티팩트)의 [보내기]·[저장]을 파일에 써 넣는다(댓글을 받은 세션이 부른다). 글 속 ![](로컬 파일) 은 작업 img/ 로 옮긴다.
-    부른 세션이 그 작업 담당(sid 같음)이면 이미 받은 것이라 읽음까지 한다 — 안 하면 채널·board wait 가 같은 답으로 또 깨운다.
-    담당이 아닌데 담당 세션이 안 듣고 있으면 SendMessage 로 깨울 문구를 찍는다."""
-    f, d = resolve(a.task)
-    if d is None:
-        sys.exit("txt 문서는 안 됩니다")
-    answer = pathlib.Path(a.file).read_text(encoding="utf-8") if a.file else sys.stdin.read()
-
-    def move(m):
-        src = pathlib.Path(m.group(2)).expanduser()
-        if not src.is_absolute() or not src.is_file():
-            return m.group(0)
-        (d / "img").mkdir(exist_ok=True)
-        name = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f") + (src.suffix or ".png")
-        shutil.copyfile(src, d / "img" / name)
-        return f"![{m.group(1)}](img/{name})"
-    answer = re.sub(r"!\[([^\]]*)\]\(([^)\s]+)\)", move, answer)
-    text = f.read_text(encoding="utf-8")
-    new = add_answer(text, a.item, answer)
-    if new == text:
-        sys.exit("빈 답 — 아무것도 안 바꿨습니다")
-    write(f, new)
-    if not a.send:
-        return print(f"저장함: {a.task} {a.item}")
-    sid = split(new)[0].get("sid", "")
-    pending = unread(d)   # PC 화면에서 보낸 게 아직 안 갔으면 읽음 처리하지 않는다 — 그것까지 삼키면 안 된다
-    send(d, [a.item])
-    if sid and sid == os.environ.get("CLAUDE_CODE_SESSION_ID") and not pending:
-        (d / ".seen").write_text(now(), encoding="utf-8")
-        return print(f"보냄: {a.task} {a.item} — 이 세션이 받은 답이라 다시 깨우지 않는다. task.md 를 다시 Read 하고 ⇒ 로 반영한 뒤"
-                     f" board push {a.task} --now — 아티팩트에서 온 답이라 그 화면에 바로 보이게.")
-    s = summary(a.task)
-    if s["listening"]:
-        print(f"보냄: {a.task} {a.item} — {s['session']} 가 듣는 중(채널 또는 board wait)이라 곧 깨어납니다.")
-    else:
-        print(f"보냄: {a.task} {a.item} — {s['session']} 가 안 듣는 중. SendMessage 로 깨운다:")
-        print(f"  Task Board {a.task} 에 사용자가 [보내기] 했는데 이 세션의 board wait 가 꺼져 있습니다."
-              f" `board wait {a.task}` 를 Bash run_in_background 로 다시 걸어 주세요 — 바로 끝나며 보낸 내용을 보여 줍니다.")
 
 
 def cmd_channel_headers(a):
@@ -1323,25 +1075,8 @@ def main(argv=None):
     sub.add_parser("done").add_argument("task")
     sub.add_parser("list")
     sub.add_parser("orphans", help="보냈는데 듣는 세션이 없어 안 읽힌 작업과 깨울 메시지")
-    pu = sub.add_parser("push", help="작업 아티팩트·목록 줄 내보낼 준비 + 부를 도구 호출 안내")
-    pu.add_argument("task")
-    pu.add_argument("--now", action="store_true", help="이미 올린 작업도 지금 올린다 — [최신으로](board sync)·아티팩트에서 온 답 반영 뒤")
-    pu.add_argument("--out", help="만들 파일을 둘 폴더(기본 <작업>/.remote) — Artifact 가 거절하면 세션 scratchpad 로")
-    sub.add_parser("hubpage", help="목록 아티팩트 화면 만들기(화면 코드 고쳤을 때만)").add_argument("out")
-    su = sub.add_parser("setup", help="처음 설정 — 설정 파일·명령 링크·PC 화면·목록 아티팩트 안내(여러 번 해도 같음)")
-    su.add_argument("--hub", help="목록 아티팩트 주소를 저장")
-    su.add_argument("--pc", help="이 PC 이름(기본 hostname)")
+    su = sub.add_parser("setup", help="처음 설정 — 설정 파일·명령 링크·PC 화면·채널 MCP(여러 번 해도 같음)")
     su.add_argument("--no-server", action="store_true", help="PC 화면(서버)은 안 켬")
-    pd = sub.add_parser("pushed", help="push 뒤 결과(아티팩트 주소·목록 줄 버전) 기록")
-    pd.add_argument("task", nargs="+")
-    pd.add_argument("--url")
-    pd.add_argument("--version", type=int, nargs="+", help="작업 순서대로")
-    pd.add_argument("--reset", action="store_true", help="아티팩트가 지워졌을 때 — 주소·버전을 잊는다")
-    rp = sub.add_parser("reply", help="바깥 화면에서 온 답을 문서에 넣기")
-    rp.add_argument("task")
-    rp.add_argument("item", help="Q1 같은 질문 id, 또는 메모")
-    rp.add_argument("--file", help="답 글 파일(없으면 표준 입력)")
-    rp.add_argument("--save", dest="send", action="store_false", help="보내지 않고 문서에만")
     sub.add_parser("url").add_argument("task", nargs="?", default="")
     sub.add_parser("channel-headers", help="(Claude Code 가 부름) board MCP 에 붙을 때 세션 pid 머리글")
     a = p.parse_args(argv)
@@ -1351,8 +1086,7 @@ def main(argv=None):
         return print(url(a.task))
     try:
         return {"new": cmd_new, "wait": cmd_wait, "done": cmd_done, "list": cmd_list, "orphans": cmd_orphans,
-                "push": cmd_push, "pushed": cmd_pushed, "hubpage": cmd_hubpage, "setup": cmd_setup, "reply": cmd_reply,
-                "channel-headers": cmd_channel_headers}[a.cmd](a)
+                "setup": cmd_setup, "channel-headers": cmd_channel_headers}[a.cmd](a)
     except KeyError as e:
         sys.exit(f"없는 작업: {e} — board list 로 확인")
 
