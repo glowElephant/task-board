@@ -129,4 +129,10 @@ board._save_logins({}); assert _gate(True, "/api/tasks", f"board={tok}") == (Fal
 (board.BOARD / "t" / ".bell").touch(); sent.clear(); board.ring_done(); assert sent == []
 board.cmd_done(_a.Namespace(task="t")); board.ring_done(); board._rang.clear(); board.ring_done()
 assert len(sent) == 1 and "시험 작업" in sent[0] and not (board.BOARD / "t" / ".bell").exists(), sent
+# 배너: 서버 시작 때는 기록만, 진행 중 → 끝 으로 바뀔 때 한 번(이미 끝이던 작업은 안 띄움)
+board.POPUP = True
+(board.BOARD / "u").mkdir(); (board.BOARD / "u" / "task.md").write_text("---\ntitle: 배너 작업\nsession: 버그 [abc123]\nstatus: 진행 중\n---\n## 요약\n지금: 고치는 중\n")
+board.watch_done(first=True); assert board._pops.empty()
+_t.sleep(0.02); board.cmd_done(_a.Namespace(task="u")); board.watch_done(); board.watch_done()
+_pop = board._pops.get_nowait(); assert _pop["title"] == "배너 작업" and _pop["session"] == "버그 [abc123]" and board._pops.empty(), _pop
 print("ok")

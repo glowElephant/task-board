@@ -17,7 +17,8 @@
 설정: 환경변수 > ~/.config/board/env (KEY=VALUE). BOARD_DIR(기본 ~/board) · BOARD_PORT(기본 8770) ·
 BOARD_EXTRA(옛 txt 문서 폴더, os.pathsep 로 여럿 — 탭으로 보여 주기만 한다) ·
 SLACK_BOT_TOKEN + BOARD_SLACK_EMAIL 또는 BOARD_SLACK_USER(밖에서 볼 때 로그인 코드와 🔔 끝 알림을 그 사람 슬랙 DM 으로 — 둘 다 있어야 밖의 문이 열린다) ·
-BOARD_PUBLIC_PORT(기본 BOARD_PORT+1) · BOARD_PUBLIC_URL(슬랙 알림 링크, 예 https://board.example.com).
+BOARD_PUBLIC_PORT(기본 BOARD_PORT+1) · BOARD_PUBLIC_URL(슬랙 알림 링크, 예 https://board.example.com) ·
+BOARD_POPUP(0 이면 작업이 끝날 때 이 PC 화면 위 배너(popup.py)를 안 띄운다).
 """
 import argparse
 import collections
@@ -67,6 +68,7 @@ SLACK_USER = CFG.get("BOARD_SLACK_USER", "")    # 또는 슬랙 멤버 ID(U…) 
 PUBLIC_PORT = int(CFG.get("BOARD_PUBLIC_PORT") or PORT + 1)
 PUBLIC_URL = CFG.get("BOARD_PUBLIC_URL", "").rstrip("/")
 LOGINS = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "board" / "logins.json"
+POPUP = (CFG.get("BOARD_POPUP") or "1") != "0" and bool(os.environ.get("DISPLAY"))
 KEEP = 90 * 86400                              # 한 번 로그인하면 3달(11-12 사용자 "최대 3달동안")
 _auth = {"code": "", "exp": 0.0, "tries": 0, "sent": []}   # 지금 코드(sha256)·만료·틀린 횟수·보낸 시각
 _auth_lock = threading.Lock()
@@ -457,6 +459,41 @@ def ring_done():
             print(f"[🔔] {d.name}: {e}", flush=True)
 
 
+_done_seen = {}           # 작업 → (문서 mtime, 끝이었나) — 진행 중 → 끝 으로 바뀌는 순간만 잡는다
+_pops = queue.Queue()
+
+
+def watch_done(first=False):
+    """작업이 끝이 되는 순간 이 PC 화면 위에 배너(popup.py) — 모든 작업(🔔 와 상관없이). 서버 시작 때(first)는 기록만 한다.
+    11-12 사용자 "세션이 끝날 때마다 알림이 … 너무 자주" → 턴마다 뜨던 turn-notify 대신 작업이 끝날 때만, "엄청 화려하게 · 세션마다 달라도"."""
+    for tid in all_ids():
+        f = BOARD / tid / "task.md"
+        if tid.startswith("txt:") or not f.is_file():
+            continue
+        m = f.stat().st_mtime
+        old = _done_seen.get(tid)
+        if old and old[0] == m:
+            continue
+        meta, body = split(f.read_text(encoding="utf-8", errors="replace"))
+        done = meta.get("status", "") in DONE
+        _done_seen[tid] = (m, done)
+        if done and not first and old is not None and not old[1] and POPUP:
+            _pops.put({"title": meta.get("title") or tid, "session": meta.get("session", ""), "now": doing(brief(body)),
+                       "at": datetime.datetime.now().strftime("%H:%M"), "url": url(tid)})
+
+
+def pop_loop():
+    """배너를 하나씩 — 둘이 겹치지 않게 앞의 것이 닫힌 뒤 다음 것."""
+    here = pathlib.Path(__file__).resolve().parent
+    while True:
+        data = _pops.get()
+        try:
+            subprocess.run([sys.executable, str(here / "popup.py"), json.dumps(data, ensure_ascii=False)],
+                           timeout=60, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            print(f"[배너] {e}", flush=True)
+
+
 def _logins():
     """로그인한 기기 — sha256(쿠키 값) → 만료 시각. 쿠키 값 자체는 어디에도 남기지 않는다."""
     try:
@@ -620,6 +657,7 @@ def chan_loop(interval=1.5):
         try:
             deliver()
             stamp_all()
+            watch_done()
             ring_done()
             with _chans_lock:
                 for m in [m for m, c in _chans.items() if c["q"] is None and not pathlib.Path(f"/proc/{c['pid']}").exists()]:
@@ -898,8 +936,10 @@ def serve():
     IN_SERVER = True
     BOARD.mkdir(parents=True, exist_ok=True)
     stamp_all(first=True)
+    watch_done(first=True)
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     threading.Thread(target=chan_loop, daemon=True).start()
+    threading.Thread(target=pop_loop, daemon=True).start()
     msg = f"Task Board: http://localhost:{PORT}  (문서 {BOARD})"
     if SLACK_TOKEN and (SLACK_EMAIL or SLACK_USER):   # 밖의 문 — 슬랙 로그인이 없으면 열지 않는다(열어도 아무도 못 들어오지만)
         pub = http.server.ThreadingHTTPServer(("127.0.0.1", PUBLIC_PORT), Handler)

@@ -17,12 +17,14 @@
 - 2026-11-11 사용자 요청 넷(board-msg-time): 말마다 받은 시각(`.times`) · 목록·작업 머리에 '지금: …' 한 줄(요약에서)과 세션 일하는 중/쉬는 중 ·
   주황 질문 머리를 누르면 그 질문으로 · 규칙 "요약 첫 줄 `지금:`"·"끝나면 그 자리에서 board done". 옛 말 시각은 세션 기록(jsonl)에서 한 번 채움(1,256개, 191개는 모름).
 
-- 2026-11-12 밖(폰)에서 보기를 아티팩트 → 자기 도메인(Cloudflare 터널)으로, 로그인은 슬랙 코드(3달), 알림은 🔔 하나, 폰 화면(board-domain).
+- 2026-11-12 밖(폰)에서 보기를 아티팩트 → 자기 도메인(Cloudflare 터널)으로, 로그인은 슬랙 코드(3달), 🔔 슬랙 끝 알림, 폰 화면(board-domain).
+  같은 날 턴마다 뜨던 PC 알림(turn-notify) 대신 작업이 끝날 때 화면 위 배너(세션마다 이모지·색이 다름).
 
 ## 구조
 ```
 board.py               서버 + CLI 한 파일(파이썬 표준 라이브러리만). 문서 해석·고쳐 넣기·슬랙 로그인·🔔·setup 도 여기
 web/index.html         화면 한 장 — 이 PC 문과 밖의 문(폰)이 같은 코드. 폭 860px 아래면 목록·작업 한 화면씩
+popup.py · web/popup.html  작업이 끝날 때 이 PC 화면 위 배너(GTK+WebKit 투명 창) — 서버가 부른다
 skills/board/SKILL.md  세션용 절차·형식(플러그인 스킬 · install.sh 는 ~/.claude/skills/board 로 링크)
 claude-rule.md         세션이 늘 알아야 할 규칙 — 플러그인은 세션 시작 훅(hooks/session_start.py)이, install.sh 는 전역 CLAUDE.md 에 넣는다
 .claude-plugin/        plugin.json · marketplace.json — `claude plugin marketplace add glowElephant/task-board`
@@ -76,9 +78,14 @@ board list; board url <작업>
   - 밖의 문에선 `/mcp`·`/api/channels` 403(로그인해도) — [보내기]가 세션에 '사용자 말'로 들어가고 세션은 이 PC 에서 명령을 실행한다. 그래서 암호 대신 슬랙 코드.
   - 밖의 문에선 `local: yes` 작업을 없는 작업처럼(회사 결재 자료 — 원래 아티팩트로 안 보내던 것). 이 PC 화면엔 보인다.
   - 폐기: 6자리 고정 암호 + 0.0.0.0(11-11) — 평문 HTTP 였고 사내망 다른 IP 로도 열렸다. 터널이 https 를 대신하고 밖의 문은 127.0.0.1 만 연다.
-- **알림은 🔔 하나**(11-12 사용자 "알림도 빼자… 보지도 않아… 알림버튼 눌러서 그 테스크 끝나면 알림"). 작업 화면에서 켜면 `.bell`, 서버 `ring_done` 이
-  1.5초마다 보다가 문서 status 가 끝이면 슬랙 DM 한 번 보내고 `.bell` 을 지운다(실패하면 1분 뒤 다시). 세션은 할 일이 없다 — `board done` 만 제때.
-  뺀 것: GNOME 알림(내 차례마다), 자리 비움 감지(GNOME 유휴 30분) + 폰 알림(채널 `[자리 비움]`·`board wait` exit 4 → 세션이 PushNotification).
+- **알림은 둘**(11-12 사용자 "알림도 빼자… 보지도 않아… 알림버튼 눌러서 그 테스크 끝나면" → 같은 날 "세션이 끝날 때마다 알림이 상단에… 너무 자주… 이 PC 에서 task 가 끝나면 상단에 · 엄청 화려하게 · 세션마다 달라도 · 특징적이게").
+  - 🔔 = 작업 화면에서 켜면 `.bell`, `ring_done` 이 1.5초마다 보다가 문서 status 가 끝이면 슬랙 DM 한 번 보내고 `.bell` 을 지운다(실패하면 1분 뒤 다시). 폰용.
+  - 이 PC 배너 = 모든 작업이 진행 중 → 끝 으로 바뀌는 순간(`watch_done`, 문서 mtime 캐시) `popup.py` 를 띄운다(줄을 세워 하나씩). 서버 시작 때는 기록만.
+    GNOME 알림이 아니라 직접 그린 창인 이유: 알림은 모양을 못 바꾼다. GTK3 + WebKit2 4.0 투명 창(X11·합성 관리자), 포커스를 안 뺏고(type hint NOTIFICATION, accept_focus False),
+    누르면 그 작업 화면, 9초 뒤 닫힘(마우스 올리면 멈춤). 모양은 `web/popup.html` — 세션 이름 낱말로 이모지·색 셋·머리말(버그→🐞 "잡았다!", ci/cd→🚀 …), 모르는 이름은 해시 색.
+    시험은 화면에 안 띄우고 `python3 popup.py '<JSON>' --shot out.png 1500`(OffscreenWindow 스냅숏 — 헤드리스 크롬은 WebKit 과 달라 쓰지 않는다).
+  - 같은 날 끈 것: 전역 훅 `~/.claude/hooks/turn-notify.sh`(1분 넘은 턴마다 "<세션> — 작업 완료" GNOME 알림) — settings.json 에서 빼고 파일은 no-op(떠 있던 세션이 아직 부름).
+  뺀 것(11-12): GNOME 알림(내 차례마다), 자리 비움 감지(GNOME 유휴 30분) + 폰 알림(채널 `[자리 비움]`·`board wait` exit 4 → 세션이 PushNotification).
 - 경로·포트는 코드에 박지 않는다(`~/.config/board/env`) — 다른 사람 PC 에 그대로 깔기 위해(공용화 대비).
 
 - 옛 txt 문서 묶음(`BOARD_EXTRA`)은 기본 꺼짐(2026-11-03 사용자 "텍스트문서는 없어도 될듯") — [보내기]가 없고, 결정 끝난 항목에 남은 빈 `→ 사용자:` 칸까지 '내 차례'로 세어 무엇을 하라는지 헷갈렸다. 코드는 남김(기본값이 비어 있어 남의 PC 엔 원래 안 뜸).

@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>Task Board · 끝</title>
+<style>
+/* 작업이 끝났을 때 이 PC 화면 위 가운데 잠깐 뜨는 배너(popup.py 가 투명 창에 띄운다).
+   세션마다 색·이모지가 다르다 — 이름의 낱말로 고르고, 모르는 이름은 이름 해시로 색을 정한다. */
+:root { --a: #ff4d6d; --b: #ff9e00; --c: #ffd166; --ink: #f7f8fb; --muted: #c6cbe0; }
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; cursor: pointer;
+  font-family: "Pretendard", "Noto Sans CJK KR", "Noto Sans KR", system-ui, sans-serif; }
+.wrap { position: absolute; inset: 14px 22px 24px; animation: drop .8s cubic-bezier(.18, 1.5, .4, 1) both; }
+.wrap.bye { animation: rise .5s cubic-bezier(.5, 0, .9, .4) both; }
+@keyframes drop { from { transform: translateY(-140%) scale(.86) rotate(-2deg); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes rise { to { transform: translateY(-150%) scale(.9); opacity: 0; } }
+
+/* 둘레: 세션 색이 도는 빛 띠 */
+.ring { position: absolute; inset: 0; border-radius: 24px; overflow: hidden;
+  box-shadow: 0 0 0 1px #fff2, 0 0 26px color-mix(in srgb, var(--a) 70%, transparent), 0 12px 34px #000a; }
+.ring::before { content: ""; position: absolute; inset: -60%;
+  background: conic-gradient(var(--a), var(--b), var(--c), var(--a), var(--b), var(--c), var(--a)); animation: spin 2.4s linear infinite; }
+@keyframes spin { to { transform: rotate(1turn); } }
+
+.card { position: absolute; inset: 3px; border-radius: 21px; overflow: hidden; display: grid; grid-template-columns: 118px 1fr; align-items: center;
+  background: radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--a) 38%, #12131c) 0%, #12131c 55%),
+              radial-gradient(90% 120% at 100% 100%, color-mix(in srgb, var(--b) 30%, transparent) 0%, transparent 60%), #12131c; }
+.card::after { content: ""; position: absolute; inset: 0; pointer-events: none; mix-blend-mode: screen; opacity: .35;
+  background: linear-gradient(115deg, transparent 30%, #fff6 45%, transparent 60%); transform: translateX(-120%);
+  animation: sheen 2.8s .9s ease-in-out infinite; }
+@keyframes sheen { 60%, 100% { transform: translateX(120%); } }
+
+/* 왼쪽: 세션 이모지 메달 */
+.badge, .txt { z-index: 2; }
+.badge { position: relative; width: 84px; height: 84px; margin-left: 22px; border-radius: 50%; display: grid; place-items: center;
+  background: conic-gradient(from 200deg, var(--a), var(--b), var(--c), var(--a)); box-shadow: 0 0 22px var(--a), inset 0 0 0 4px #ffffff30;
+  animation: pop .9s .25s cubic-bezier(.2, 1.8, .4, 1) both; }
+.badge::before { content: ""; position: absolute; inset: 6px; border-radius: 50%; background: #12131ccc; }
+.badge .emo { position: relative; font-size: 44px; line-height: 1; animation: bob 1.6s 1.1s ease-in-out infinite; }
+.badge .halo { position: absolute; inset: -10px; border-radius: 50%; border: 2px solid var(--c); opacity: 0; animation: halo 1.6s 1s ease-out infinite; }
+@keyframes pop { from { transform: scale(0) rotate(-120deg); } to { transform: none; } }
+@keyframes bob { 50% { transform: translateY(-4px) rotate(6deg) scale(1.06); } }
+@keyframes halo { from { transform: scale(.85); opacity: .9; } to { transform: scale(1.35); opacity: 0; } }
+
+/* 오른쪽: 글 */
+.txt { position: relative; min-width: 0; padding: 16px 26px 22px 6px; display: grid; gap: 4px; }
+.top { display: flex; gap: 8px; align-items: center; }
+.chip { font-size: 12.5px; font-weight: 700; letter-spacing: .02em; color: #12131c; padding: 2px 10px; border-radius: 999px;
+  background: linear-gradient(90deg, var(--a), var(--b)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+.at { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.head { font-size: 26px; font-weight: 900; letter-spacing: -.01em; line-height: 1.15;
+  background: linear-gradient(90deg, var(--c), #fff, var(--b), var(--c)); background-size: 300% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent; animation: flow 3s linear infinite; }
+@keyframes flow { to { background-position: 300% 0; } }
+.title { font-size: 15.5px; font-weight: 650; color: var(--ink); line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical; overflow: hidden; }
+.now { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stamp { position: absolute; right: 18px; top: 12px; font-size: 13px; font-weight: 900; color: var(--c); border: 2px solid var(--c);
+  border-radius: 8px; padding: 1px 8px; transform: rotate(8deg); animation: stamp .5s .7s cubic-bezier(.2, 2, .4, 1) both; }
+@keyframes stamp { from { transform: rotate(8deg) scale(3); opacity: 0; } }
+
+/* 아래: 저절로 닫히기까지 남은 시간 — 마우스를 올리면 멈춘다 */
+.bar { position: absolute; left: 0; bottom: 0; height: 4px; width: 100%; transform-origin: left;
+  background: linear-gradient(90deg, var(--a), var(--b), var(--c)); animation: drain 9s linear .8s both; }
+@keyframes drain { to { transform: scaleX(0); } }
+body:hover .bar { animation-play-state: paused; }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01s !important; animation-iteration-count: 1 !important; } }
+</style>
+</head>
+<body>
+<div class="wrap" id="wrap">
+  <div class="ring"></div>
+  <div class="card">
+    <div class="badge"><span class="halo"></span><span class="emo" id="emo"></span></div>
+    <div class="txt">
+      <div class="top"><span class="chip" id="chip"></span><span class="at" id="at"></span></div>
+      <div class="head" id="head"></div>
+      <div class="title" id="title"></div>
+      <div class="now" id="now"></div>
+      <span class="stamp">끝</span>
+    </div>
+    <div class="bar" id="bar"></div>
+    <canvas id="fx"></canvas>
+  </div>
+</div>
+<script>
+/*DATA*/
+const P = window.POP || { title: 'Task Board 를 내 도메인으로 밖에서·폰으로', session: '이모저모 [a6dd3e]', now: '폰 로그인 확인, 🔔 끝 알림', at: '11:42' };
+// 세션 이름의 낱말 → [이모지, 색 셋]. 위에서부터 먼저 맞는 것. 모르는 이름은 아래 해시로.
+const THEMES = [
+  [/버그|bug/i, '🐞', ['#ff4d6d', '#ff9e00', '#ffd166'], '잡았다!'],
+  [/ci\/cd|\bci\b|빌드|build|release/i, '🚀', ['#3a86ff', '#8338ec', '#a0c4ff'], '발사 완료!'],
+  [/보안|secur/i, '🛡️', ['#06d6a0', '#118ab2', '#b8f2e6'], '막아 냈다!'],
+  [/스팀|steam|게임|game/i, '🎮', ['#4361ee', '#4cc9f0', '#f72585'], '클리어!'],
+  [/문서|doc|업무/i, '📄', ['#f4a261', '#e76f51', '#ffe8d6'], '결재 완료!'],
+  [/정비|maint|수리/i, '🔧', ['#ffb703', '#fb8500', '#fff3b0'], '수리 끝!'],
+  [/rag|지식|검색/i, '🧠', ['#c77dff', '#7b2cbf', '#e0aaff'], '알아냈다!'],
+  [/플랫폼|platform/i, '🏗️', ['#2ec4b6', '#ff9f1c', '#cbf3f0'], '올렸다!'],
+  [/질문|question|ask/i, '💬', ['#00b4d8', '#48cae4', '#caf0f8'], '답했다!'],
+  [/muscat|머스캣/i, '🍇', ['#9d4edd', '#e0aaff', '#80ffdb'], '익었다!'],
+  [/새로운|\bnew\b/i, '✨', ['#f72585', '#7209b7', '#4cc9f0'], '새로 나왔다!'],
+  [/feature|기능/i, '🦿', ['#ff006e', '#fb5607', '#ffbe0b'], '걷는다!'],
+  [/\bpr\b|리뷰|review|check/i, '🔍', ['#38b000', '#9ef01a', '#ccff33'], '통과!'],
+  [/\bai\b|tool|도구/i, '🤖', ['#00f5d4', '#00bbf9', '#9b5de5'], '삐빅, 완료!'],
+  [/이모저모|잡일|etc/i, '🎨', ['#ff595e', '#ffca3a', '#1982c4'], '하나 끝!'],
+];
+const SPARE = ['🦄', '🐙', '🦊', '🐳', '🌈', '🍀', '🔥', '⚡', '🌟', '🎯', '🪐', '🍩'];
+function theme(name) {
+  const hit = THEMES.find(([re]) => re.test(name));
+  if (hit) return { emo: hit[1], c: hit[2], head: hit[3] };
+  let h = 0; for (const ch of name) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+  const hue = h % 360;
+  return { emo: SPARE[h % SPARE.length], c: [`hsl(${hue} 90% 62%)`, `hsl(${(hue + 55) % 360} 90% 58%)`, `hsl(${(hue + 25) % 360} 95% 82%)`], head: '끝났어요!' };
+}
+const name = (P.session || '').replace(/\s*\[[0-9a-f]+\]\s*$/, '') || 'Task Board';
+const T = theme(name);
+const root = document.documentElement.style;
+['--a', '--b', '--c'].forEach((k, i) => root.setProperty(k, T.c[i]));
+document.getElementById('emo').textContent = T.emo;
+document.getElementById('chip').textContent = T.emo + ' ' + name;
+document.getElementById('at').textContent = P.at || '';
+document.getElementById('head').textContent = T.head;
+document.getElementById('title').textContent = P.title || '';
+document.getElementById('now').textContent = P.now || '';
+
+const post = m => { try { window.webkit.messageHandlers.board.postMessage(m); } catch (e) { /* 브라우저로 열었을 때 */ } };
+document.body.onclick = () => post('open');
+document.getElementById('bar').addEventListener('animationend', () => {
+  const w = document.getElementById('wrap'); w.classList.add('bye'); setTimeout(() => post('close'), 520);
+});
+
+// 색종이 — 세션 이모지와 세션 색 띠가 메달에서 터져 나온다
+const cv = document.getElementById('fx'), cx = cv.getContext('2d');
+const dpr = window.devicePixelRatio || 1;
+function size() { cv.width = cv.clientWidth * dpr; cv.height = cv.clientHeight * dpr; cx.setTransform(dpr, 0, 0, dpr, 0, 0); }
+size();
+const parts = [];
+function burst(x, y, n) {
+  for (let i = 0; i < n; i++) {
+    const ang = Math.random() * Math.PI * 2, sp = 2.5 + Math.random() * 6.5;
+    parts.push({ x, y, vx: Math.cos(ang) * sp * 1.4, vy: Math.sin(ang) * sp - 3, r: Math.random() * 6.28, vr: (Math.random() - .5) * .35,
+      emo: Math.random() < .2, col: T.c[i % 3], s: 4 + Math.random() * 6, life: 1 });
+  }
+}
+let last = 0;
+function tick(t) {
+  const dt = Math.min(2, (t - last) / 16.7 || 1); last = t;
+  cx.clearRect(0, 0, cv.width, cv.height);
+  for (const p of parts) {
+    p.vy += .18 * dt; p.vx *= .985; p.x += p.vx * dt; p.y += p.vy * dt; p.r += p.vr * dt; p.life -= .009 * dt;
+    if (p.life <= 0) continue;
+    cx.save(); cx.globalAlpha = Math.min(1, p.life * 1.6); cx.translate(p.x, p.y); cx.rotate(p.r);
+    if (p.emo) { cx.font = `${p.s * 1.9}px "Noto Color Emoji"`; cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.fillText(T.emo, 0, 0); }
+    else { cx.fillStyle = p.col; cx.fillRect(-p.s / 2, -p.s / 4, p.s, p.s / 2); }
+    cx.restore();
+  }
+  for (let i = parts.length - 1; i >= 0; i--) if (parts[i].life <= 0) parts.splice(i, 1);
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  setTimeout(() => burst(64, cv.clientHeight / 2, 60), 650);
+  setTimeout(() => burst(cv.clientWidth - 50, 24, 30), 1100);
+}
+</script>
+</body>
+</html>
