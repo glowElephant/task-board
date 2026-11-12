@@ -408,6 +408,40 @@ def send(d, items):
     (d / ".sent").write_text(json.dumps({"at": now(), "items": items}, ensure_ascii=False), encoding="utf-8")
 
 
+def slug(title):
+    """제목 → 작업 이름(폴더). 한글·영숫자만 남기고 나머진 '-', 겹치면 -2, -3."""
+    base = re.sub(r"[^0-9A-Za-z가-힣]+", "-", title).strip("-")[:40].strip("-") or "task"
+    tid, n = base, 2
+    while (BOARD / tid).exists():
+        tid, n = f"{base}-{n}", n + 1
+    return tid
+
+
+def assign(sid, title, text, bell=False):
+    """[＋ 새 작업] — 사용자가 고른 세션에 작업 문서를 만들어 주고 채널로 바로 깨운다(11-12 사용자 "테스크 보드에서 세션이랑 주제 추가해서 테스크 만드는거").
+    할 일은 `## 메모` 에 사용자 말(->)로, 머리 `from: board`(세션이 첫 답을 달기 전까지 배달 글에 '새 작업' 안내). 붙인 사진은 대기실 → 작업 img/."""
+    s = next((s for _, _, s in chan_info()[0] if s.get("sessionId") == sid), None)
+    if not s:
+        raise KeyError("그 세션은 지금 깨울 수 없습니다 — 목록을 새로 불러 주세요")
+    title = " ".join(title.split())[:120]
+    if not title or not text.strip():
+        raise ValueError("제목과 할 일을 적어 주세요")
+    tid = slug(title)
+    d = BOARD / tid
+    d.mkdir(parents=True)
+    for rel in set(re.findall(r"!\[[^\]]*\]\((img/[^)\s/]+)\)", text)):
+        src = BOARD / ".staging" / rel
+        if src.is_file():
+            (d / "img").mkdir(exist_ok=True)
+            os.replace(src, d / rel)
+    doc = TEMPLATE.format(title=title, session=s.get("name", ""), summary="사용자가 Task Board 에서 맡김 — 메모의 할 일을 읽고 시작 전")
+    write(d / "task.md", add_answer(set_meta(set_meta(doc, "sid", sid), "from", "board"), MEMO, text))
+    if bell:
+        (d / ".bell").touch()
+    send(d, [MEMO])
+    return tid
+
+
 def is_local(meta):
     """문서 머리 `local: yes` — 회사 내부 자료(결재 번호·금액·사람 이름 등)가 있어 밖에서 보는 문(터널)으로는 안 보여 주는 작업.
     2026-11-04 회사 결재 문서를 다루는 작업에서 요청됨(그땐 아티팩트로 안 보내기). 이 PC 화면엔 그대로 보인다."""
@@ -874,6 +908,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.reply([[m, c["pid"]] for m, c in _chans.items() if c["q"] is not None])
             if u.path in ("/", "/index.html"):
                 return self.reply((WEB / "index.html").read_bytes(), "text/html; charset=utf-8")
+            if u.path == "/api/sessions":   # [＋ 새 작업] 에서 고를 세션 — 채널로 지금 깨울 수 있는 것만
+                lv, out = live(), {}
+                for _, _, ss in chan_info()[0]:
+                    if ss.get("sessionId") and ss["sessionId"] not in out:
+                        out[ss["sessionId"]] = {"sid": ss["sessionId"], "name": ss.get("name", ""), "live": lv.get(ss["sessionId"])}
+                return self.reply(sorted(out.values(), key=lambda x: x["name"]))
             if u.path == "/api/tasks":
                 return self.reply([s for s in map(summary, all_ids()) if not (self.public() and s.get("local"))])
             if u.path == "/api/task":
@@ -882,9 +922,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(detail(q["id"]))
             if u.path.startswith("/files/"):
                 tid, _, rel = urllib.parse.unquote(u.path[len("/files/"):]).partition("/")
-                if self.hidden(tid):
+                if tid == "_new":   # 새 작업 칸에 붙인 사진(맡기기 전 대기실)
+                    d = BOARD / ".staging"
+                elif self.hidden(tid):
                     raise KeyError(tid)
-                _, d = resolve(tid)
+                else:
+                    _, d = resolve(tid)
                 f = (d / rel).resolve()
                 if d.resolve() in f.parents and f.is_file():
                     return self.reply(f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream")
@@ -911,12 +954,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 with _auth_lock:
                     _save_logins({})
                 return self.reply({"ok": True})
+            if u.path == "/api/new":
+                b = json.loads(raw or b"{}")
+                return self.reply({"id": assign(b.get("sid", ""), b.get("title", ""), b.get("text", ""), bool(b.get("bell")))})
             if u.path == "/api/image":
-                if self.hidden(q["id"]):
+                if q["id"] == "_new":
+                    d = BOARD / ".staging"
+                elif self.hidden(q["id"]):
                     raise KeyError(q["id"])
-                _, d = resolve(q["id"])
+                else:
+                    _, d = resolve(q["id"])
                 ext = re.sub(r"[^a-z0-9]", "", q.get("ext", "png").lower())[:5] or "png"
-                (d / "img").mkdir(exist_ok=True)
+                (d / "img").mkdir(parents=True, exist_ok=True)
                 name = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f") + "." + ext
                 (d / "img" / name).write_bytes(raw)
                 return self.reply({"path": "img/" + name})
@@ -1009,7 +1058,11 @@ def cmd_new(a):
 def report_text(tid, d, channel=False):
     info = json.loads((d / ".sent").read_text(encoding="utf-8"))
     out = [f"[보냄 {info.get('at', '')}] {tid} — {d / 'task.md'}"]
-    blocks = parse(split((d / "task.md").read_text(encoding="utf-8"))[1])
+    meta, body = split((d / "task.md").read_text(encoding="utf-8"))
+    blocks = parse(body)
+    if meta.get("from") == "board" and not any(e["who"] == "claude" for b in blocks if b["type"] == "memo" for e in b["entries"]):
+        out.append("  (새 작업 — 사용자가 Task Board 에서 이 세션에 맡겼다. 메모의 할 일을 일로 받아 시작한다: 요약 `지금:` 을 고치고,"
+                   " 진행·물을 것·결과는 이 문서에, 메모엔 ⇒ 로 '받았다' 한 줄. 끝나면 board done)")
     for b in blocks:
         if b["type"] == "item" and b["turn"] == "claude":
             out.append(f"  {b['id']}. {b['title']}\n    -> " + b["entries"][-1]["text"].replace("\n", "\n    -> "))

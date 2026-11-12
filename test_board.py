@@ -135,4 +135,19 @@ board.POPUP = True
 board.watch_done(first=True); assert board._pops.empty()
 _t.sleep(0.02); board.cmd_done(_a.Namespace(task="u")); board.watch_done(); board.watch_done()
 _pop = board._pops.get_nowait(); assert _pop["title"] == "배너 작업" and _pop["session"] == "버그 [abc123]" and board._pops.empty(), _pop
+# 새 작업 맡기기: 고른 세션 sid 로 문서, 할 일은 메모에 내 말로, 대기실 사진은 작업 img/ 로, 🔔, 바로 배달(첫 답 전까지 '새 작업' 안내)
+board._cinfo.update(at=_t.time() + 1e9, v=([("m1", 11, {"sessionId": "s1", "name": "가"})], {"가": 1}))
+(board.BOARD / ".staging" / "img").mkdir(parents=True); (board.BOARD / ".staging" / "img" / "x.png").write_bytes(b"png")
+_tid = board.assign("s1", "로그 봐 줘: 어제 밤", "어제 밤 로그 확인\n![](img/x.png)", bell=True)
+_m, _b = board.split((board.BOARD / _tid / "task.md").read_text())
+assert _tid == "로그-봐-줘-어제-밤" and _m["sid"] == "s1" and _m["session"] == "가" and _m["from"] == "board", (_tid, _m)
+assert (board.BOARD / _tid / "img" / "x.png").is_file() and (board.BOARD / _tid / ".bell").exists() and board.unread(board.BOARD / _tid)
+_memo = [b for b in board.parse(_b) if b["type"] == "memo"][0]
+assert _memo["entries"] == [{"who": "me", "text": "어제 밤 로그 확인\n![](img/x.png)"}]
+assert "새 작업" in board.report_text(_tid, board.BOARD / _tid)
+assert board.slug("로그 봐 줘: 어제 밤") == "로그-봐-줘-어제-밤-2"
+try:
+    board.assign("없는", "제목", "할 일"); raise AssertionError("없는 세션에 맡김")
+except KeyError:
+    pass
 print("ok")
