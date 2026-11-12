@@ -417,7 +417,8 @@ function renderTask() {
   const out = [head];
   if (t.kind === 'task' && !doneNow && !t.listening)
     out.push(h('div', { className: 'banner' }, h('span', { textContent: (t.unread ? '보낸 것이 아직 안 읽혔습니다 — ' : '') +
-      '이 세션은 지금 듣고 있지 않아 [보내기]해도 바로 깨어나지 않습니다(PC 메모리가 모자라면 세션의 대기가 꺼집니다). 그 세션 채팅에 "Task Board 봐", 또는 아무 세션에 "Task Board 깨워 줘"라고 해 주세요.' })));
+      (t.live ? '이 세션은 켜져 있지만 채널 없이 떠 있어 [보내기]가 바로 들어가지 않습니다(Orca 가 세션을 다시 열 때 채널 래퍼를 건너뛰면 이렇게 됩니다). 그 세션을 한 번 닫았다 다시 열거나, 급하면 그 세션 채팅에 "Task Board 봐"라고 해 주세요.'
+        : '이 세션은 꺼져 있습니다 — 다시 켜지면 보낸 것이 저절로 들어갑니다. 급하면 아무 세션에 "Task Board 깨워 줘"라고 해 주세요.') })));
   if (t.kind === 'txt') {
     out.push(h('div', { className: 'banner' }, h('span', { textContent: '옛 txt 문서 — [보내기]가 없습니다. 저장한 뒤 그 세션에 "봐"라고 알려 주세요.' })));
     out.push(rawEditor(t));
