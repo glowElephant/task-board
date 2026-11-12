@@ -72,17 +72,17 @@ _auth = {"code": "", "exp": 0.0, "tries": 0, "sent": []}   # 지금 코드(sha25
 _auth_lock = threading.Lock()
 _fails = {}                                    # 밖의 IP → (틀린 횟수, 막힌 끝 시각) — 5번 틀리면 10분
 _LOOK = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Task Board</title><style>body{font:16px system-ui,sans-serif;background:#f4f5f7;color:#222;display:grid;place-items:center;min-height:100vh;margin:0}
+<title>Task Board</title><style>*{box-sizing:border-box}body{font:16px system-ui,sans-serif;background:#f4f5f7;color:#222;display:grid;place-items:center;min-height:100vh;margin:0}
 main{background:#fff;padding:28px;border-radius:10px;box-shadow:0 2px 12px #0002;display:grid;gap:12px;width:min(320px,88vw)}
 form{display:grid;gap:12px}input,button{font:inherit;padding:11px;border-radius:6px;border:1px solid #ccc}
-input{font-size:22px;letter-spacing:.3em;text-align:center}button{background:#d9480f;color:#fff;border:0;font-weight:600}
+input{font-size:22px;letter-spacing:.3em;text-align:center;width:100%;min-width:0}button{background:#d9480f;color:#fff;border:0;font-weight:600}
 button.link{background:none;color:#1d5fd1;padding:0;font-weight:400}span{color:#555;font-size:14px}p{margin:0;color:#c33;font-size:14px}
 @media (prefers-color-scheme:dark){body{background:#13161b;color:#e5e8ee}main{background:#1b1f26}span{color:#98a2b3}input{background:#13161b;color:#e5e8ee;border-color:#2d333d}}</style>
 <main><b>Task Board</b>"""
 LOGIN = _LOOK + """<span>슬랙 DM 으로 6자리 코드를 보냅니다.</span><p><!--e--></p>
 <form method="post" action="/login/code"><button>슬랙으로 코드 받기</button></form></main>"""
 CODE = _LOOK + """<span>슬랙 DM 으로 온 6자리 코드 — 5분 안에 넣어 주세요.</span>
-<form method="post" action="/login"><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" autofocus>
+<form method="post" action="/login"><input name="code" size="6" inputmode="numeric" autocomplete="one-time-code" maxlength="6" autofocus>
 <p><!--e--></p><button>열기</button></form><form method="post" action="/login/code"><button class="link">코드 다시 받기</button></form></main>"""
 
 FM = re.compile(r"\A---\n(.*?)\n---\n?", re.S)
