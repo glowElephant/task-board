@@ -13,6 +13,7 @@
   board done <작업>                         끝으로 표시 (목록 '끝난 작업' 으로) — 🔔 를 켠 작업이면 슬랙 DM 이 간다
   board list                                작업 목록
   board url [<작업>]                        화면 주소
+  board banner [--shot]                     이 세션의 '끝' 배너 꾸미기 — 설정 파일 경로·틀, --shot 이면 화면에 안 띄우고 PNG 로
 
 설정: 환경변수 > ~/.config/board/env (KEY=VALUE). BOARD_DIR(기본 ~/board) · BOARD_PORT(기본 8770) ·
 BOARD_EXTRA(옛 txt 문서 폴더, os.pathsep 로 여럿 — 탭으로 보여 주기만 한다) ·
@@ -479,7 +480,27 @@ def watch_done(first=False):
         _done_seen[tid] = (m, done)
         if done and not first and old is not None and not old[1] and POPUP:
             _pops.put({"title": meta.get("title") or tid, "session": meta.get("session", ""), "now": doing(brief(body)),
-                       "at": datetime.datetime.now().strftime("%H:%M"), "url": url(tid)})
+                       "at": datetime.datetime.now().strftime("%H:%M"), "url": url(tid), "theme": banner_theme(meta.get("session", ""))})
+
+
+def short_name(session):
+    return re.sub(r"\s*\[[0-9a-f]+\]\s*$", "", session or "").strip()
+
+
+def banner_file(session):
+    """세션이 꾸민 '끝' 배너 — $BOARD_DIR/.banners/<세션 이름>.json(11-12 사용자 "각 세션한테 배너 디자인하라그래 자기 색깔에 맞게").
+    세션마다 파일 하나라 14곳이 동시에 고쳐도 안 부딪친다. 이름 기준 — 다시 띄워 sid·ref 가 바뀌어도 그대로."""
+    return BOARD / ".banners" / ((re.sub(r"[/\\\0]", "_", short_name(session)) or "unknown") + ".json")
+
+
+def banner_theme(session):
+    """{emoji, colors[3], heads[], confetti[], css} 중 있는 것 — 잘못된 파일이면 기본 모양(빈 dict)."""
+    try:
+        f = banner_file(session)
+        v = json.loads(f.read_text(encoding="utf-8")) if f.stat().st_size < 20_000 else {}
+        return v if isinstance(v, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def pop_loop():
@@ -1094,6 +1115,40 @@ def cmd_channel_headers(a):
     print(json.dumps({"X-Board-Pid": str(claude_pid() or 0)}))
 
 
+BANNER_TEMPLATE = {
+    "emoji": "", "colors": [], "heads": [], "confetti": [], "css": "",
+    "_도움말": ("있는 칸만 기본 모양을 덮는다. emoji = 메달 가운데 이모지 하나 · colors = 색 셋 [주, 보조, 밝은 강조] (#rrggbb) · "
+              "heads = 머리말 후보(뜰 때마다 하나 고름, 짧게) · confetti = 색종이로 터질 이모지들 · "
+              "css = 덧붙일 CSS(창은 640×230 고정, 뼈대: .wrap > .ring + .card > .badge(.halo .emo) .txt(.top(.chip .at) .head .title .now .stamp) .bar canvas#fx, "
+              "색 변수 --a --b --c). 이 칸(_도움말)은 지워도 된다."),
+}
+
+
+def cmd_banner(a):
+    """이 세션의 '끝' 배너 설정 파일을 만들고(없으면 틀로) 경로를 찍는다. --shot 이면 실제 창과 같은 엔진으로 PNG 두 장(터질 때·가라앉은 뒤)."""
+    session = a.session
+    if not session:
+        pid = claude_pid()
+        session = (claude_session(pid) or {}).get("name", "") if pid else ""
+    if not short_name(session):
+        sys.exit("세션 이름을 모릅니다 — --session \"이름\" 으로")
+    f = banner_file(session)
+    if not f.exists():
+        f.parent.mkdir(parents=True, exist_ok=True)
+        write(f, json.dumps(BANNER_TEMPLATE, ensure_ascii=False, indent=2) + "\n")
+    print(f"배너 설정: {f}  (세션 '{short_name(session)}')")
+    if not a.shot:
+        return print("고친 뒤 `board banner --shot` 으로 모양을 본다(화면에 안 띄움).")
+    here = pathlib.Path(__file__).resolve().parent
+    data = {"title": "MuJoCo 4.0 올리기(#1323) — 전체 점검 통과, 머지 승인 받음", "session": session, "now": "끝 — develop 머지 확인, 브랜치 정리",
+            "at": datetime.datetime.now().strftime("%H:%M"), "theme": banner_theme(session)}
+    for ms, tag in ((1300, "burst"), (3200, "rest")):
+        out = f.with_name(f.stem + f"-{tag}.png")
+        r = subprocess.run([sys.executable, str(here / "popup.py"), json.dumps(data, ensure_ascii=False), "--shot", str(out), str(ms)],
+                           capture_output=True, text=True, timeout=60)
+        print(f"{tag}: {out}" if out.is_file() and r.returncode == 0 else f"{tag}: 실패 {r.stderr.strip()[-200:]}")
+
+
 def cmd_list(a):
     for s in sorted((summary(t) for t in all_ids()), key=lambda s: (s["status"] == "끝", -s["mine"], -s["mtime"])):
         when = datetime.datetime.fromtimestamp(s["mtime"]).strftime("%m-%d %H:%M")
@@ -1119,6 +1174,9 @@ def main(argv=None):
     su = sub.add_parser("setup", help="처음 설정 — 설정 파일·명령 링크·PC 화면·채널 MCP(여러 번 해도 같음)")
     su.add_argument("--no-server", action="store_true", help="PC 화면(서버)은 안 켬")
     sub.add_parser("url").add_argument("task", nargs="?", default="")
+    bn = sub.add_parser("banner", help="이 세션의 '끝' 배너 꾸미기 — 설정 파일 경로·틀, --shot 이면 PNG 미리보기")
+    bn.add_argument("--shot", action="store_true", help="화면에 안 띄우고 PNG 두 장(터질 때·가라앉은 뒤)")
+    bn.add_argument("--session", default="", help="세션 이름(기본: 이 명령을 부른 Claude 세션)")
     sub.add_parser("channel-headers", help="(Claude Code 가 부름) board MCP 에 붙을 때 세션 pid 머리글")
     a = p.parse_args(argv)
     if a.cmd == "serve":
@@ -1127,7 +1185,7 @@ def main(argv=None):
         return print(url(a.task))
     try:
         return {"new": cmd_new, "wait": cmd_wait, "done": cmd_done, "list": cmd_list, "orphans": cmd_orphans,
-                "setup": cmd_setup, "channel-headers": cmd_channel_headers}[a.cmd](a)
+                "setup": cmd_setup, "banner": cmd_banner, "channel-headers": cmd_channel_headers}[a.cmd](a)
     except KeyError as e:
         sys.exit(f"없는 작업: {e} — board list 로 확인")
 

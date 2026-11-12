@@ -114,6 +114,13 @@ function theme(name) {
 }
 const name = (P.session || '').replace(/\s*\[[0-9a-f]+\]\s*$/, '') || 'Task Board';
 const T = theme(name);
+// 세션이 직접 꾸민 배너(`board banner` → $BOARD_DIR/.banners/<세션>.json) — 있는 칸만 덮는다
+const X = P.theme || {};
+if (typeof X.emoji === 'string' && X.emoji) T.emo = X.emoji;
+if (Array.isArray(X.colors) && X.colors.length >= 3) T.c = X.colors.slice(0, 3);
+if (Array.isArray(X.heads) && X.heads.length) T.head = X.heads[Math.floor(Math.random() * X.heads.length)];
+T.conf = Array.isArray(X.confetti) && X.confetti.length ? X.confetti : [T.emo];
+if (typeof X.css === 'string' && X.css) { const st = document.createElement('style'); st.textContent = X.css; document.head.append(st); }
 const root = document.documentElement.style;
 ['--a', '--b', '--c'].forEach((k, i) => root.setProperty(k, T.c[i]));
 document.getElementById('emo').textContent = T.emo;
@@ -139,7 +146,7 @@ function burst(x, y, n) {
   for (let i = 0; i < n; i++) {
     const ang = Math.random() * Math.PI * 2, sp = 2.5 + Math.random() * 6.5;
     parts.push({ x, y, vx: Math.cos(ang) * sp * 1.4, vy: Math.sin(ang) * sp - 3, r: Math.random() * 6.28, vr: (Math.random() - .5) * .35,
-      emo: Math.random() < .2, col: T.c[i % 3], s: 4 + Math.random() * 6, life: 1 });
+      emo: Math.random() < .2 ? T.conf[Math.floor(Math.random() * T.conf.length)] : '', col: T.c[i % 3], s: 4 + Math.random() * 6, life: 1 });
   }
 }
 let last = 0;
@@ -150,7 +157,7 @@ function tick(t) {
     p.vy += .18 * dt; p.vx *= .985; p.x += p.vx * dt; p.y += p.vy * dt; p.r += p.vr * dt; p.life -= .009 * dt;
     if (p.life <= 0) continue;
     cx.save(); cx.globalAlpha = Math.min(1, p.life * 1.6); cx.translate(p.x, p.y); cx.rotate(p.r);
-    if (p.emo) { cx.font = `${p.s * 1.9}px "Noto Color Emoji"`; cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.fillText(T.emo, 0, 0); }
+    if (p.emo) { cx.font = `${p.s * 1.9}px "Noto Color Emoji"`; cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.fillText(p.emo, 0, 0); }
     else { cx.fillStyle = p.col; cx.fillRect(-p.s / 2, -p.s / 4, p.s, p.s / 2); }
     cx.restore();
   }

@@ -84,6 +84,9 @@ board list; board url <작업>
     GNOME 알림이 아니라 직접 그린 창인 이유: 알림은 모양을 못 바꾼다. GTK3 + WebKit2 4.0 투명 창(X11·합성 관리자), 포커스를 안 뺏고(type hint NOTIFICATION, accept_focus False),
     누르면 그 작업 화면, 9초 뒤 닫힘(마우스 올리면 멈춤). 모양은 `web/popup.html` — 세션 이름 낱말로 이모지·색 셋·머리말(버그→🐞 "잡았다!", ci/cd→🚀 …), 모르는 이름은 해시 색.
     시험은 화면에 안 띄우고 `python3 popup.py '<JSON>' --shot out.png 1500`(OffscreenWindow 스냅숏 — 헤드리스 크롬은 WebKit 과 달라 쓰지 않는다).
+    세션이 자기 배너를 꾸민다(11-12 사용자 "각 세션한테 배너 디자인하라그래 자기 색깔에 맞게"): `$BOARD_DIR/.banners/<세션 이름>.json`
+    {emoji, colors[3], heads[], confetti[], css} 중 있는 칸만 기본을 덮는다. 세션마다 파일 하나 — popup.html 을 14곳이 고치면 부딪친다. 키는 이름(sid·ref 는 다시 띄우면 바뀐다).
+    `board banner` = 파일 만들기·경로, `--shot` = 화면에 안 띄우고 PNG 두 장(터질 때 1.3초·가라앉은 뒤 3.2초). 20 KB 넘거나 깨진 JSON 은 무시(기본 모양).
   - 같은 날 끈 것: 전역 훅 `~/.claude/hooks/turn-notify.sh`(1분 넘은 턴마다 "<세션> — 작업 완료" GNOME 알림) — settings.json 에서 빼고 파일은 no-op(떠 있던 세션이 아직 부름).
   뺀 것(11-12): GNOME 알림(내 차례마다), 자리 비움 감지(GNOME 유휴 30분) + 폰 알림(채널 `[자리 비움]`·`board wait` exit 4 → 세션이 PushNotification).
 - 경로·포트는 코드에 박지 않는다(`~/.config/board/env`) — 다른 사람 PC 에 그대로 깔기 위해(공용화 대비).
