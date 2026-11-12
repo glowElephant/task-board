@@ -16,7 +16,7 @@
 
 설정: 환경변수 > ~/.config/board/env (KEY=VALUE). BOARD_DIR(기본 ~/board) · BOARD_PORT(기본 8770) ·
 BOARD_EXTRA(옛 txt 문서 폴더, os.pathsep 로 여럿 — 탭으로 보여 주기만 한다) ·
-SLACK_BOT_TOKEN + BOARD_SLACK_EMAIL(밖에서 볼 때 로그인 코드와 🔔 끝 알림을 그 사람 슬랙 DM 으로 — 둘 다 있어야 밖의 문이 열린다) ·
+SLACK_BOT_TOKEN + BOARD_SLACK_EMAIL 또는 BOARD_SLACK_USER(밖에서 볼 때 로그인 코드와 🔔 끝 알림을 그 사람 슬랙 DM 으로 — 둘 다 있어야 밖의 문이 열린다) ·
 BOARD_PUBLIC_PORT(기본 BOARD_PORT+1) · BOARD_PUBLIC_URL(슬랙 알림 링크, 예 https://board.example.com).
 """
 import argparse
@@ -62,7 +62,8 @@ PORT = int(CFG.get("BOARD_PORT") or 8770)
 EXTRA = [pathlib.Path(p).expanduser() for p in (CFG.get("BOARD_EXTRA") or "").split(os.pathsep) if p]
 WEB = pathlib.Path(__file__).resolve().parent / "web"
 SLACK_TOKEN = CFG.get("SLACK_BOT_TOKEN", "")   # 운영보드 슬랙 봇 토큰을 같이 쓴다(users:read.email · chat:write)
-SLACK_EMAIL = CFG.get("BOARD_SLACK_EMAIL", "")  # 코드·알림을 받을 사람 — 회사 메일로 슬랙 계정을 찾는다
+SLACK_EMAIL = CFG.get("BOARD_SLACK_EMAIL", "")  # 코드·알림을 받을 사람 — 회사 메일로 슬랙 계정을 찾는다(users:read.email)
+SLACK_USER = CFG.get("BOARD_SLACK_USER", "")    # 또는 슬랙 멤버 ID(U…) — 봇에 메일 찾기 권한이 없을 때
 PUBLIC_PORT = int(CFG.get("BOARD_PUBLIC_PORT") or PORT + 1)
 PUBLIC_URL = CFG.get("BOARD_PUBLIC_URL", "").rstrip("/")
 LOGINS = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "board" / "logins.json"
@@ -416,8 +417,8 @@ _slack = {}
 
 def slack(text):
     """BOARD_SLACK_EMAIL 의 슬랙 DM 으로 보낸다 — 운영보드 로그인과 같은 길(users.lookupByEmail → chat.postMessage)."""
-    if not (SLACK_TOKEN and SLACK_EMAIL):
-        raise RuntimeError("슬랙 설정 없음(SLACK_BOT_TOKEN · BOARD_SLACK_EMAIL)")
+    if not (SLACK_TOKEN and (SLACK_EMAIL or SLACK_USER)):
+        raise RuntimeError("슬랙 설정 없음(SLACK_BOT_TOKEN · BOARD_SLACK_EMAIL 또는 BOARD_SLACK_USER)")
 
     def call(method, **params):
         req = urllib.request.Request("https://slack.com/api/" + method, data=urllib.parse.urlencode(params).encode(),
@@ -428,7 +429,7 @@ def slack(text):
             raise RuntimeError(f"슬랙 {method}: {j.get('error')}")
         return j
     if "uid" not in _slack:
-        _slack["uid"] = call("users.lookupByEmail", email=SLACK_EMAIL)["user"]["id"]
+        _slack["uid"] = SLACK_USER or call("users.lookupByEmail", email=SLACK_EMAIL)["user"]["id"]
     call("chat.postMessage", channel=_slack["uid"], text=text)
 
 
@@ -900,7 +901,7 @@ def serve():
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     threading.Thread(target=chan_loop, daemon=True).start()
     msg = f"Task Board: http://localhost:{PORT}  (문서 {BOARD})"
-    if SLACK_TOKEN and SLACK_EMAIL:   # 밖의 문 — 슬랙 로그인이 없으면 열지 않는다(열어도 아무도 못 들어오지만)
+    if SLACK_TOKEN and (SLACK_EMAIL or SLACK_USER):   # 밖의 문 — 슬랙 로그인이 없으면 열지 않는다(열어도 아무도 못 들어오지만)
         pub = http.server.ThreadingHTTPServer(("127.0.0.1", PUBLIC_PORT), Handler)
         pub.public = True
         threading.Thread(target=pub.serve_forever, daemon=True).start()

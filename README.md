@@ -23,7 +23,7 @@ claude plugin install task-board@task-board
 
 - 리눅스(systemd)면 PC 화면 http://localhost:8770 이 사용자 서비스로 뜬다. 맥·윈도우는 수동 `python3 board.py serve`.
 - 플러그인 없이 쓰려면 `git clone` 뒤 `bash install.sh`(스킬 링크 + 전역 CLAUDE.md 규칙 + setup). 둘 다 하지 말 것 — 규칙이 두 번 들어간다.
-- 설정 `~/.config/board/env`: `BOARD_DIR`, `BOARD_PORT`, 밖에서 보기 `SLACK_BOT_TOKEN`·`BOARD_SLACK_EMAIL`(둘 다 있으면 `127.0.0.1:BOARD_PUBLIC_PORT`(기본 8771)에 로그인이 필요한 문이 열린다), `BOARD_PUBLIC_URL`(슬랙 알림 링크).
+- 설정 `~/.config/board/env`: `BOARD_DIR`, `BOARD_PORT`, 밖에서 보기 `SLACK_BOT_TOKEN`·`BOARD_SLACK_EMAIL`(또는 멤버 ID `BOARD_SLACK_USER` — 봇에 메일 찾기 권한이 없을 때)(둘 다 있으면 `127.0.0.1:BOARD_PUBLIC_PORT`(기본 8771)에 로그인이 필요한 문이 열린다), `BOARD_PUBLIC_URL`(슬랙 알림 링크).
 
 **밖(폰)에서 보기** — 밖의 문에 Cloudflare 터널을 붙인다(공유기 포트를 안 연다, https 는 Cloudflare 가).
 ```bash
@@ -33,7 +33,7 @@ cloudflared tunnel route dns board board.<도메인>
 # ~/.cloudflared/board.yml: tunnel·credentials-file·ingress(hostname board.<도메인> → http://127.0.0.1:8771, 나머지 http_status:404)
 cloudflared tunnel --config ~/.cloudflared/board.yml run   # 사용자 서비스로 걸어 둔다
 ```
-슬랙 봇은 `users:read.email`·`chat:write` 가 있어야 한다(메일로 계정을 찾아 DM).
+슬랙 봇은 `chat:write` 가 있어야 한다. 메일로 찾으려면 `users:read.email` 도(없으면 `BOARD_SLACK_USER`).
 
 **[보내기]를 바로 받기(채널, 리눅스)** — `board setup` 이 MCP `board` 를 등록한다. 세션을 `claude --dangerously-load-development-channels server:board` 로 띄우면
 세션이 아무것도 걸어 두지 않아도 [보내기] 때 깨어난다(Claude Code Channels, 연구 미리보기 — 띄울 때마다 경고 창 한 번).
