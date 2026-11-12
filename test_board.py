@@ -150,4 +150,13 @@ try:
     board.assign("없는", "제목", "할 일"); raise AssertionError("없는 세션에 맡김")
 except KeyError:
     pass
+# 멈춤: 진행 중 + 세션 안 일함 + 사용자 차례 질문 없음 → '확인 필요'(mine 1). 일하는 중·기다림·내 차례 질문·끝은 아님
+board._live.update(at=_t.time() + 1e9, v={"s1": "idle", "s2": "busy"})
+for _n, _sid, _now, _st, _q in [("멈1", "s1", "남은 건 5분 실행(사용자)", "진행 중", "[v]"), ("멈2", "없음", "x", "진행 중", "[v]"),
+                                 ("일", "s2", "x", "진행 중", "[v]"), ("기", "s1", "리뷰 기다림", "진행 중", "[v]"),
+                                 ("질", "s1", "x", "진행 중", "[ ]"), ("끝", "s1", "x", "끝", "[v]")]:
+    (board.BOARD / _n).mkdir()
+    (board.BOARD / _n / "task.md").write_text(f"---\ntitle: {_n}\nsid: {_sid}\nstatus: {_st}\n---\n## 요약\n지금: {_now}\n\n## 정할 것\n### {_q} Q1. 할까?\n")
+_s = {n: board.summary(n) for n in ["멈1", "멈2", "일", "기", "질", "끝"]}
+assert [n for n, s in _s.items() if s["stuck"]] == ["멈1", "멈2"] and _s["멈1"]["mine"] == 1 and _s["질"]["mine"] == 1, _s
 print("ok")

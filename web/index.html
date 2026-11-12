@@ -256,11 +256,11 @@ function taskRow(t) {
   const b = h('button', { type: 'button', className: 'trow' + (on ? ' on' : ''), title: t.brief ? t.title + '\n\n' + t.brief : t.title },
     h('div', { className: 'top' }, h('span', { className: 'dot ' + (t.kind === 'txt' ? 'txt' : t.mine ? 'me' : '') }),
       h('span', { className: 'tt', textContent: t.title }), t.bell ? h('span', { title: '끝나면 슬랙으로 알림', textContent: '🔔' }) : null,
-      t.mine ? h('span', { className: 'count', textContent: t.mine }) : null),
+      t.mine ? h('span', { className: 'count', textContent: t.stuck ? '!' : t.mine }) : null),
     t.now ? h('div', { className: 'now', textContent: '지금: ' + t.now }) : null,
     asks.length ? h('ul', { className: 'asks' }, asks.map(q => h('li', { textContent: q, title: q + ' — 누르면 이 질문으로', onclick: e => { e.stopPropagation(); go(t.id, q.split('.')[0]); } })),
       more > 0 ? h('li', { className: 'more', textContent: `외 ${more}개` }) : null) : null,
-    h('div', { className: 'when', textContent: when(t.mtime) + (t.unread && !t.listening ? ' · ⚠ 보냈는데 세션이 안 듣는 중' : t.mine ? '' : t.waiting ? ' · 세션이 반영 중' : ' · 내 차례 없음') }));
+    h('div', { className: 'when', textContent: when(t.mtime) + (t.unread && !t.listening ? ' · ⚠ 보냈는데 세션이 안 듣는 중' : t.stuck ? ' · ⚠ 세션이 멈춰 있음 — 지금 줄에 내 할 일이 있는지 확인' : t.mine ? '' : t.waiting ? ' · 세션이 반영 중' : ' · 내 차례 없음') }));
   b.onclick = () => go(t.id, t.mine && asks.length ? asks[0].split('.')[0] : null);   // 내 차례면 그 질문으로 바로
   return b;
 }
@@ -404,7 +404,7 @@ function renderTask() {
   const head = h('div', { className: 'top' },
     h('div', {}, backBtn(), h('h1', { textContent: t.title }),
       h('div', { className: 'meta' },
-        h('span', { className: 'pill ' + (doneNow ? 'done' : t.mine ? 'me' : 'claude'), textContent: doneNow ? '끝' : t.mine ? `내 차례 ${t.mine}` : t.kind === 'txt' ? 'txt 문서' : '세션 차례' }),
+        h('span', { className: 'pill ' + (doneNow ? 'done' : t.mine ? 'me' : 'claude'), textContent: doneNow ? '끝' : t.stuck ? '확인 필요 — 세션 멈춤' : t.mine ? `내 차례 ${t.mine}` : t.kind === 'txt' ? 'txt 문서' : '세션 차례' }),
         h('span', { textContent: t.session }), liveTag(t.live), h('span', { textContent: when(t.mtime) + ' 갱신' })),
       t.now && !doneNow ? h('div', { className: 'nowline' }, h('b', { textContent: '지금' }), t.now) : null),
     h('div', { className: 'actions' }, ...(t.kind === 'task' ? [

@@ -337,12 +337,17 @@ def summary(tid):
                 "asks": [m.group(1).strip() for m in re.finditer(r"^\s*\[ \]\s*(.+)$", text, re.M)]}
     meta, body = split(text)
     items = [b for b in parse(body) if b["type"] == "item"]
+    status = "끝" if meta.get("status", "") in DONE else "진행 중"
+    mine, waiting, now = sum(i["turn"] == "me" for i in items), sum(i["turn"] == "claude" for i in items), doing(brief(body))
+    # 멈춤: 진행 중인데 세션은 일 안 하고(쉼·꺼짐) 사용자에게 열린 질문도 없다 — 세션이 규칙을 지켰는지와 상관없이 사실로 판정한다.
+    # 11-12 Steam: 사용자 할 일("5분 실행")이 닫은 질문 답에만 있어 '내 차례 없음'으로 떴다. 남이 할 일만 기다리면 `지금: … 기다림`(기존 규칙).
+    stuck = status == "진행 중" and not mine and not waiting and live().get(meta.get("sid", "")) != "busy" and "기다림" not in (now or "")
     return {"id": tid, "kind": "task", "title": meta.get("title") or tid, "session": meta.get("session", ""),
-            "status": "끝" if meta.get("status", "") in DONE else "진행 중",
-            "mine": sum(i["turn"] == "me" for i in items), "waiting": sum(i["turn"] == "claude" for i in items),
+            "status": status, "stuck": stuck,
+            "mine": mine or int(stuck), "waiting": waiting,
             "asks": [f"{i['id']}. {i['title']}" for i in items if i["turn"] == "me"],
             "listening": tid in listeners() or bool(chan_targets(meta)), "unread": unread(d), "mtime": f.stat().st_mtime,
-            "now": doing(brief(body)), "brief": brief(body)[:600], "live": live().get(meta.get("sid", "")),
+            "now": now, "brief": brief(body)[:600], "live": live().get(meta.get("sid", "")),
             "bell": (d / ".bell").exists(), "local": is_local(meta)}
 
 
