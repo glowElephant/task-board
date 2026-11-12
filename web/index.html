@@ -36,7 +36,12 @@ button.primary { background: var(--me); border-color: var(--me); color: #fff; fo
 button:disabled { opacity: .5; cursor: default; }
 
 /* 왼쪽: 세션별 묶음 — 작업마다 내 차례 질문 머리를 미리 보여 준다 */
-.app { display: grid; grid-template-columns: clamp(320px, 24vw, 440px) 1fr; height: 100vh; }
+.app { display: grid; grid-template-columns: clamp(320px, 24vw, 440px) 1fr; grid-template-rows: minmax(0, 1fr) auto; height: 100vh; }
+/* 하단 한 줄: Claude 한도(5시간·7일) 사용량과 초기화까지 남은 시간 */
+#usage { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 2px 18px; align-items: baseline; padding: 6px 14px;
+  border-top: 1px solid var(--line); background: var(--surface); color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+#usage:empty { display: none; }
+#usage b { color: var(--ink); font-weight: 650; } #usage .hi b { color: var(--me); }
 aside { border-right: 1px solid var(--line); background: var(--surface); overflow-y: auto; display: flex; flex-direction: column; }
 .side-head { position: sticky; top: 0; background: var(--surface); z-index: 2; display: flex; align-items: center; gap: 8px;
   padding: 12px 14px; border-bottom: 1px solid var(--line); }
@@ -94,6 +99,7 @@ select:focus, input[type=text]:focus { border-color: var(--focus); outline: none
   aside { border-right: 0; min-height: 100dvh; overflow: visible; }
   .app.task aside, .app:not(.task) #main { display: none; }
   #main { overflow: visible; }
+  #usage { position: sticky; bottom: 0; z-index: 3; padding: 6px 12px; }
   .back { display: inline-block; }
   .page { padding: 12px 12px 80px; }
   h1 { font-size: 19px; }
@@ -177,6 +183,7 @@ details.reopen > summary { color: var(--muted); font-size: 13px; cursor: pointer
       <button id="outBtn" type="button" title="폰을 잃어버렸을 때 — 로그인해 둔 기기 전부 다시 슬랙 코드를 받아야 합니다">모든 기기 로그아웃</button></div>
   </aside>
   <main id="main"><div class="page" id="page"><p class="empty">불러오는 중…</p></div></main>
+  <footer id="usage" aria-label="Claude 사용량"></footer>
 </div>
 <script>
 const $ = (s, el = document) => el.querySelector(s);
@@ -527,7 +534,23 @@ $('#outBtn').onclick = async e => {   // 한 번 더 눌러야 — 실수로 눌
   await api('/api/logout-all', {}); location.reload();
 };
 
+const left = s => { const m = Math.max(1, Math.round(s / 60)), d = Math.floor(m / 1440), hh = Math.floor(m % 1440 / 60);
+  return d ? `${d}일 ${hh}시간` : hh ? `${hh}시간 ${m % 60}분` : `${m}분`; };
+async function usage() {
+  let u; try { u = await api('/api/usage'); } catch { return; }
+  const now = Date.now() / 1000, ws = [['5시간', u.five_hour], ['7일', u.seven_day]].filter(([, w]) => w);
+  if (!ws.length) return $('#usage').replaceChildren();
+  const at = new Date(Math.max(...ws.map(([, w]) => w.at)) * 1000);
+  $('#usage').replaceChildren(h('span', { textContent: 'Claude 사용량' }), ...ws.map(([n, w]) => w.resets_at <= now
+    ? h('span', { textContent: `${n} 초기화됨` })
+    : h('span', { className: w.used_percentage >= 80 ? 'hi' : '' }, `${n} `, h('b', { textContent: `${Math.round(w.used_percentage)}%` }),
+        ` · 초기화까지 ${left(w.resets_at - now)}`)),
+    h('span', { textContent: `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')} 기준` }));
+}
+
 (async () => {
+  const utick = async () => { if (!document.hidden) await usage(); setTimeout(utick, 30000); };
+  utick();
   tasks = await api('/api/tasks');
   const want = decodeURIComponent(location.hash.slice(1));
   const first = tasks.find(t => t.id === want) || sorted()[0];
@@ -537,7 +560,7 @@ $('#outBtn').onclick = async e => {   // 한 번 더 눌러야 — 실수로 눌
   // 앞 요청이 끝난 뒤 다음을 건다(느릴 때 겹쳐 쌓이지 않게), 안 보는 탭에선 쉰다
   const tick = async () => { if (!document.hidden) await refreshList(); setTimeout(tick, 2000); };
   setTimeout(tick, 2000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshList(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { refreshList(); usage(); } });
 })();
 function route() {
   const id = decodeURIComponent(location.hash.slice(1));

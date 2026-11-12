@@ -69,6 +69,7 @@ SLACK_USER = CFG.get("BOARD_SLACK_USER", "")    # 또는 슬랙 멤버 ID(U…) 
 PUBLIC_PORT = int(CFG.get("BOARD_PUBLIC_PORT") or PORT + 1)
 PUBLIC_URL = CFG.get("BOARD_PUBLIC_URL", "").rstrip("/")
 LOGINS = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "board" / "logins.json"
+USAGE = pathlib.Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache") / "board" / "usage"   # 상태줄이 세션마다 남기는 한도 사용량
 POPUP = (CFG.get("BOARD_POPUP") or "1") != "0" and bool(os.environ.get("DISPLAY"))
 KEEP = 90 * 86400                              # 한 번 로그인하면 3달(11-12 사용자 "최대 3달동안")
 _auth = {"code": "", "exp": 0.0, "tries": 0, "sent": []}   # 지금 코드(sha256)·만료·틀린 횟수·보낸 시각
@@ -728,6 +729,31 @@ def chan_loop(interval=1.5):
 
 # ── 서버 ─────────────────────────────────────────────────────────────────────
 
+def usage():
+    """Claude 한도(5시간·7일) — 화면 하단 한 줄(11-12 사용자 "전체 사용량만", "남은 기간"). 상태줄(~/.claude/statusline.sh)이
+    세션마다 USAGE/<sid>.json 에 rate_limits 를 남긴다. 창마다 가장 늦은 초기화 시각의 값 중 최댓값을 고른다 — 쉬던 세션이
+    옛 값으로 다시 그려도 덮이지 않게(같은 창에선 사용량이 줄지 않는다)."""
+    now, best = time.time(), {}
+    for f in USAGE.glob("*.json"):
+        try:
+            mt = f.stat().st_mtime
+            if now - mt > 8 * 86400:   # 7일 창보다 오래된 세션 파일은 쓸모없다
+                f.unlink()
+                continue
+            d = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        for k in ("five_hour", "seven_day"):
+            try:
+                r, pct = float(d[k]["resets_at"]), float(d[k]["used_percentage"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            b = best.get(k)
+            if b is None or r > b["resets_at"] + 60 or (abs(r - b["resets_at"]) <= 60 and pct > b["used_percentage"]):
+                best[k] = {"resets_at": r, "used_percentage": pct, "at": mt}
+    return best
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -928,6 +954,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     if ss.get("sessionId") and ss["sessionId"] not in out:
                         out[ss["sessionId"]] = {"sid": ss["sessionId"], "name": ss.get("name", ""), "live": lv.get(ss["sessionId"])}
                 return self.reply(sorted(out.values(), key=lambda x: x["name"]))
+            if u.path == "/api/usage":
+                return self.reply(usage())
             if u.path == "/api/tasks":
                 return self.reply([s for s in map(summary, all_ids()) if not (self.public() and s.get("local"))])
             if u.path == "/api/task":
