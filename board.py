@@ -393,6 +393,9 @@ def detail(tid):
         meta, body = split(text)
         out["blocks"] = parse(body)
         stamp(d, out["blocks"], f.stat().st_mtime)
+        # 문서가 부르는 그림의 수정 시각 — 화면이 주소에 ?v= 로 붙여, 같은 그림은 다시 받지 않고 바뀐 그림만 새로 받는다
+        out["files"] = {s: (p.stat().st_mtime_ns) for s in set(re.findall(r"!\[[^\]]*\]\(([^)\s]+)", text))
+                        if (p := (d / s).resolve()).is_file() and d.resolve() in p.parents}
     return out
 
 
@@ -784,11 +787,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def reply(self, body, ctype="application/json; charset=utf-8", code=200, headers=None):
         data = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode()
+        headers, cache = dict(headers or {}), "no-store"
+        if code == 200 and self.command == "GET":
+            # 받은 것과 같으면 304(본문 없음) — 바깥 주소는 미국 엣지를 거쳐 요청 하나가 0.4~3.9초라, 2초마다 목록 130KB 를 다시 받지 않게.
+            # no-cache = 저장은 하되 쓸 때마다 서버에 물어본다 — 로그아웃되면 401 이라 저장본이 보이지 않는다
+            tag = '"%s"' % hashlib.sha1(data).hexdigest()[:16]
+            cache = headers.pop("Cache-Control", "private, no-cache")
+            headers["ETag"] = tag
+            if self.headers.get("If-None-Match") == tag:
+                code, data = 304, b""
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        for k, v in (headers or {}).items():
+        self.send_header("Cache-Control", cache)
+        for k, v in headers.items():
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
@@ -997,8 +1009,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 else:
                     _, d = resolve(tid)
                 f = (d / rel).resolve()
-                if d.resolve() in f.parents and f.is_file():
-                    return self.reply(f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream")
+                if d.resolve() in f.parents and f.is_file():   # ?v=<수정 시각>(화면이 붙인다)이면 그 판은 안 바뀐다 — 다시 묻지도 않게
+                    return self.reply(f.read_bytes(), mimetypes.guess_type(f.name)[0] or "application/octet-stream",
+                                      headers={"Cache-Control": "private, max-age=31536000, immutable"} if q.get("v") else None)
         except (KeyError, StopIteration, TypeError, AttributeError):
             pass
         self.reply({"error": "없는 작업·파일"}, code=404)

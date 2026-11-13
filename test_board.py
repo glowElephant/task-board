@@ -186,4 +186,26 @@ assert list(board.usage()) == ["seven_day"], board.usage()
 _r = board.search("KEYSTORE 비번", hide=lambda tid: tid == "찾기숨김")
 assert [x["id"] for x in _r] == ["찾기끝"] and _r[0]["snippet"] == "Keystore 비번은 어디?", _r
 assert board.search("keystore 없는말") == [] and board.search("  ") == []
+# 캐싱: 같은 응답이면 304(본문 없음), 문서가 부르는 그림은 수정 시각을 주고 ?v= 가 붙으면 고정 캐시. POST·오류는 저장 금지 그대로
+import threading as _th, urllib.request as _ur, urllib.error as _ue
+(board.BOARD / "캐시").mkdir(); (board.BOARD / "캐시" / "img").mkdir()
+(board.BOARD / "캐시" / "img" / "a.png").write_bytes(b"png"); (board.BOARD / "캐시" / "task.md").write_text("---\ntitle: 캐시\nstatus: 진행 중\n---\n## 메모\n-> ![](img/a.png) ![](img/없음.png) ![](../t/task.md)\n")
+_srv = board.http.server.ThreadingHTTPServer(("127.0.0.1", 0), board.Handler); _srv.public = False
+_th.Thread(target=_srv.serve_forever, daemon=True).start()
+_base = f"http://127.0.0.1:{_srv.server_port}"
+def _get(path, **hd):
+    try:
+        with _ur.urlopen(_ur.Request(_base + path, headers=hd)) as r:
+            return r.status, dict(r.headers), r.read()
+    except _ue.HTTPError as e:
+        return e.code, dict(e.headers), e.read()
+_c, _hd, _body = _get("/api/task?id=" + _ur.quote("캐시"))
+assert _c == 200 and _hd["Cache-Control"] == "private, no-cache" and _hd["ETag"], _hd
+assert list(json.loads(_body)["files"]) == ["img/a.png"], json.loads(_body)["files"]   # 없는 그림·폴더 밖은 빠짐
+assert _get("/api/task?id=" + _ur.quote("캐시"), **{"If-None-Match": _hd["ETag"]})[:1] == (304,)
+assert _get("/api/task?id=" + _ur.quote("캐시"), **{"If-None-Match": '"other"'})[0] == 200
+_c, _hd, _ = _get("/files/" + _ur.quote("캐시") + "/img/a.png?v=1"); assert _c == 200 and "immutable" in _hd["Cache-Control"], _hd
+assert _get("/files/" + _ur.quote("캐시") + "/img/a.png")[1]["Cache-Control"] == "private, no-cache"
+assert _get("/api/task?id=" + _ur.quote("없다"))[1]["Cache-Control"] == "no-store"
+_srv.shutdown()
 print("ok")

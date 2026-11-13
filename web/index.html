@@ -236,12 +236,17 @@ const shortSession = s => (s || '').replace(/\s*\[[0-9a-f]+\]$/, '');
 
 function md(text, tid) {
   const box = h('div', { className: 'md' });
-  box.innerHTML = DOMPurify.sanitize(marked.parse(text || ''));
-  box.querySelectorAll('img').forEach(img => {
+  // template 안은 그림을 안 받는다 — 주소를 고치기 전에 엉뚱한 /img/… 를 받지 않게. ?v=수정 시각이면 서버가 '안 바뀜'으로 내줘 다시 안 받는다
+  const tpl = document.createElement('template');
+  tpl.innerHTML = DOMPurify.sanitize(marked.parse(text || ''));
+  tpl.content.querySelectorAll('img').forEach(img => {
+    img.loading = 'lazy'; img.decoding = 'async';
     const src = img.getAttribute('src') || '';
     if (/^(https?:|data:|\/)/.test(src)) return;
-    img.src = `/files/${encodeURIComponent(tid)}/${src}`;
+    const v = cur && cur.id === tid && cur.files && cur.files[src];
+    img.src = `/files/${encodeURIComponent(tid)}/${src}` + (v ? `?v=${v}` : '');
   });
+  box.append(tpl.content);
   box.querySelectorAll('pre > code.language-mermaid').forEach(code => {
     const div = h('div', { className: 'mermaid', textContent: code.textContent });
     code.parentElement.replaceWith(div);
