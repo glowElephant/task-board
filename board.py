@@ -225,7 +225,7 @@ def choices(desc):
     A 부터 차례로 둘 이상일 때만. 이름 = 굵은 글씨, 없으면 첫 `(`·`:`·`—`·`. ` 앞."""
     segs = []
     for ln in desc.split("\n"):
-        parts = re.split(r"\s+·\s+", ln)
+        parts = re.split(r"\s+·\s+", re.sub(r"^\s*·\s*", "", ln))   # 줄 머리 `· B …`(앞 줄에 이어 쓴 선택지)도
         for i, part in enumerate(parts):
             m = (OPT.search if i == 0 and len(parts) > 1 else OPT.match)(part)
             if m and (m.start() == 0 or len(parts) > 1):

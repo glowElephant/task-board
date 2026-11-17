@@ -229,4 +229,5 @@ assert _c("**A 일단 그대로 써 보기**(추천). 캐싱이 이미\n**B Tail
 assert _c("길이는 **A 3분 30초 안팎**(추천 — 지금) · B 4~5분(더 길게) · C 그대로") == [("A", "3분 30초 안팎", True), ("B", "4~5분", False), ("C", "그대로", False)]
 assert _c("A **파일 보내기**: 폰으로\nB **다른 곳에 쓰기**: 보고서\n  - 11/02 재부팅\nD 다른 일(적어 주세요)") == [("A", "파일 보내기", False), ("B", "다른 곳에 쓰기", False)]
 assert _c("플랜 A 로 가면 됩니다") == [] and _c("A 하나뿐") == [] and _c("B 먼저 · C 다음") == []
+assert [c["key"] for c in board.choices("**A 거부**(추천). 설명\n· B 앱 고침 — 설명\n· C 실행 파일")] == ["A", "B", "C"]
 print("choices ok")
