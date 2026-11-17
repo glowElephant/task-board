@@ -9,11 +9,16 @@ GNOME 알림 대신 직접 그리는 이유: 알림은 모양을 못 바꾼다(1
 X11 + 합성 관리자 전제(이 PC GNOME). 웨일랜드는 창 위치를 못 정해 가운데 위에 안 뜰 수 있다.
 """
 import json
+import os
 import pathlib
 import subprocess
 import sys
 
-import gi
+# 11-17: 그래픽 드라이버가 반쯤 바뀐 PC(재부팅 전)에서 WebKit 의 GPU 그리기가 "Could not create GBM EGL display" 로 죽어
+# 배너가 조용히 안 떴다(11-15~). 작은 배너라 GPU 없이 그려도 된다.
+os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+
+import gi  # noqa: E402
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")

@@ -632,8 +632,10 @@ def pop_loop():
     while True:
         data = _pops.get()
         try:
-            subprocess.run([sys.executable, str(here / "popup.py"), json.dumps(data, ensure_ascii=False)],
-                           timeout=60, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            r = subprocess.run([sys.executable, str(here / "popup.py"), json.dumps(data, ensure_ascii=False)],
+                               timeout=60, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            if r.returncode:   # 11-17: 버리던 오류 — 이틀 동안 배너가 안 뜬 걸 아무도 몰랐다
+                print(f"[배너] 실패 {r.returncode}: {(r.stderr or '').strip()[-300:]}", flush=True)
         except (OSError, subprocess.TimeoutExpired) as e:
             print(f"[배너] {e}", flush=True)
 
