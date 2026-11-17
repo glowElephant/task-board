@@ -162,11 +162,12 @@ except KeyError:
 board._live.update(at=_t.time() + 1e9, v={"s1": "idle", "s2": "busy"})
 for _n, _sid, _now, _st, _q in [("멈1", "s1", "남은 건 5분 실행(사용자)", "진행 중", "[v]"), ("멈2", "없음", "x", "진행 중", "[v]"),
                                  ("일", "s2", "x", "진행 중", "[v]"), ("기", "s1", "리뷰 기다림", "진행 중", "[v]"),
-                                 ("질", "s1", "x", "진행 중", "[ ]"), ("끝", "s1", "x", "끝", "[v]")]:
+                                 ("질", "s1", "x", "진행 중", "[ ]"), ("끝", "s1", "x", "끝", "[v]"), ("예", "s1", "03:00 회차 뒤 확인", "진행 중", "[v]")]:
     (board.BOARD / _n).mkdir()
     (board.BOARD / _n / "task.md").write_text(f"---\ntitle: {_n}\nsid: {_sid}\nstatus: {_st}\n---\n## 요약\n지금: {_now}\n\n## 정할 것\n### {_q} Q1. 할까?\n")
-_s = {n: board.summary(n) for n in ["멈1", "멈2", "일", "기", "질", "끝"]}
+_s = {n: board.summary(n) for n in ["멈1", "멈2", "일", "기", "질", "끝", "예"]}
 assert [n for n, s in _s.items() if s["stuck"]] == ["멈1", "멈2"] and _s["멈1"]["mine"] == 1 and _s["질"]["mine"] == 1, _s
+assert _s["예"]["until"] and not _s["예"]["mine"] and _s["멈1"]["until"] is None, _s["예"]
 # 한도 사용량: 같은 창이면 최댓값(쉬던 세션의 옛 값에 안 덮임), 새 창이면 새 값, 지난 창·없는 창(울트라 5시간)·깨진 파일은 빠짐
 board.USAGE = _p.Path(tempfile.mkdtemp()); _T = _t.time()
 _w = lambda n, d: (board.USAGE / f"{n}.json").write_text(json.dumps(d))
@@ -180,6 +181,17 @@ _w("new", {"five_hour": _win(9000, 5)}); assert board.usage()["five_hour"]["used
 for _f in board.USAGE.glob("*.json"): _f.unlink()
 _w("ultra", {"seven_day": _win(9e4, 24)}); _w("stale5", {"five_hour": _win(-60, 70)})
 assert list(board.usage()) == ["seven_day"], board.usage()
+import os
+_w("stale7", {"seven_day": _win(9e4, 86)}); os.utime(board.USAGE / "stale7.json", (_T - 86400, _T - 86400))
+assert board.usage()["seven_day"]["used_percentage"] == 24, board.usage()   # 하루 전 세션의 옛 86% 는 지금 24% 를 못 덮는다
+# 예약: `지금:` 줄의 아직 안 온 시각 — 날짜 없으면 고친 뒤 처음 오는 그 시각, 다 지났으면 None
+import datetime as _dt
+_b = _dt.datetime(2026, 11, 17, 14, 0).timestamp(); _at = lambda *a: _dt.datetime(*a).timestamp()
+assert board.until("오늘 밤(11-18 새벽 03:00) 회차 · 11-18 07:47 결과 확인", _b, _b) == _at(2026, 11, 18, 3, 0)
+assert board.until("03:00 회차", _b, _b) == _at(2026, 11, 18, 3, 0) and board.until("오후 3시 회의", _b, _b) == _at(2026, 11, 17, 15, 0)
+assert board.until("11-16 03:00 끝남 · 3시간 걸림", _b, _b) is None and board.until("x", _b, _b) is None
+assert board.until("11-18 03:00", _b, _at(2026, 11, 18, 4, 0)) is None   # 지나면 다시 멈춤 판정
+assert board.until("01-02 09:00", _at(2026, 12, 30, 9, 0), _at(2026, 12, 30, 9, 0)) == _at(2027, 1, 2, 9, 0)
 # 검색: 끝난 작업까지, 본문(답)에서도, 낱말 모두(AND)·대소문자 무시, 숨김(local) 빠짐, 미리보기는 걸린 줄에서 머리표 뗀 것
 (board.BOARD / "찾기끝").mkdir(); (board.BOARD / "찾기끝" / "task.md").write_text("---\ntitle: 키 바꾸기\nstatus: 끝\n---\n## 메모\n-> Keystore 비번은 어디?\n")
 (board.BOARD / "찾기숨김").mkdir(); (board.BOARD / "찾기숨김" / "task.md").write_text("---\ntitle: 숨김\nstatus: 진행 중\n---\nkeystore 비번\n")

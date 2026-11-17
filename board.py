@@ -165,6 +165,32 @@ def doing(br):
     return re.sub(r"\*\*|`", "", line).strip(" -*")[:140]
 
 
+WHEN = re.compile(r"(?:(\d{1,2})[-/](\d{1,2})\D{0,8}?)?(?:(새벽|아침|오전|오후|저녁|밤)\s*)?(\d{1,2})(?::(\d{2})|시(?!간)(?:\s*(\d{1,2})분)?)")
+
+
+def until(line, base, now=None):
+    """`지금:` 줄의 시각 중 아직 안 온 가장 이른 것(epoch) — 예약·예정을 기다리는 작업(11-17 사용자 "예약이거든?").
+    날짜 없는 시각은 문서를 고친 뒤 처음 오는 그 시각. 시각이 다 지났으면 None → 다시 '멈춤' 판정을 받는다.
+    ponytail: 시각이 있으면 다 기다림으로 본다 — 그 시각에 세션이 할 일인지는 모른다."""
+    now, b, out = now or time.time(), datetime.datetime.fromtimestamp(base), []
+    for mo, dd, ap, hh, mi, mi2 in WHEN.findall(line or ""):
+        h, m = int(hh) + (12 if ap in ("오후", "저녁", "밤") and int(hh) < 12 else 0), int(mi or mi2 or 0)
+        try:
+            if mo:
+                t = datetime.datetime(b.year, int(mo), int(dd), h, m)
+                if t < b - datetime.timedelta(days=180):   # 12월에 쓴 "01-02" 는 다음 해
+                    t = t.replace(year=b.year + 1)
+            else:
+                t = b.replace(hour=h, minute=m, second=0, microsecond=0)
+                if t <= b:
+                    t += datetime.timedelta(days=1)
+        except ValueError:   # 24:00·13월 같은 것
+            continue
+        if t.timestamp() > now:
+            out.append(t.timestamp())
+    return min(out, default=None)
+
+
 _live = {"at": 0.0, "v": {}}
 
 
@@ -342,9 +368,10 @@ def summary(tid):
     mine, waiting, now = sum(i["turn"] == "me" for i in items), sum(i["turn"] == "claude" for i in items), doing(brief(body))
     # 멈춤: 진행 중인데 세션은 일 안 하고(쉼·꺼짐) 사용자에게 열린 질문도 없다 — 세션이 규칙을 지켰는지와 상관없이 사실로 판정한다.
     # 11-12 Steam: 사용자 할 일("5분 실행")이 닫은 질문 답에만 있어 '내 차례 없음'으로 떴다. 남이 할 일만 기다리면 `지금: … 기다림`(기존 규칙).
-    stuck = status == "진행 중" and not mine and not waiting and live().get(meta.get("sid", "")) != "busy" and "기다림" not in (now or "")
+    sched = until(now, f.stat().st_mtime) if status == "진행 중" else None
+    stuck = status == "진행 중" and not mine and not waiting and live().get(meta.get("sid", "")) != "busy" and "기다림" not in (now or "") and not sched
     return {"id": tid, "kind": "task", "title": meta.get("title") or tid, "session": meta.get("session", ""),
-            "status": status, "stuck": stuck,
+            "status": status, "stuck": stuck, "until": sched,
             "mine": mine or int(stuck), "waiting": waiting,
             "asks": [f"{i['id']}. {i['title']}" for i in items if i["turn"] == "me"],
             "listening": tid in listeners() or bool(chan_targets(meta)), "unread": unread(d), "mtime": f.stat().st_mtime,
@@ -757,16 +784,20 @@ def chan_loop(interval=1.5):
 def usage():
     """Claude 한도(5시간·7일) — 화면 하단 한 줄(11-12 사용자 "전체 사용량만", "남은 기간"). 상태줄(~/.claude/statusline.sh)이
     세션마다 USAGE/<sid>.json 에 rate_limits 를 남긴다. 창마다 가장 늦은 초기화 시각의 값 중 최댓값을 고른다 — 쉬던 세션이
-    옛 값으로 다시 그려도 덮이지 않게(같은 창에선 사용량이 줄지 않는다)."""
-    now, best = time.time(), {}
+    옛 값으로 다시 그려도 덮이지 않게. 단 최근 10분 안에 쓴 파일만 — 같은 창에서도 사용량이 줄 때가 있다(11-17 초기화)."""
+    now, best, files = time.time(), {}, []
     for f in USAGE.glob("*.json"):
         try:
             mt = f.stat().st_mtime
             if now - mt > 8 * 86400:   # 7일 창보다 오래된 세션 파일은 쓸모없다
                 f.unlink()
                 continue
-            d = json.loads(f.read_text())
+            files.append((mt, json.loads(f.read_text())))
         except (OSError, ValueError):
+            continue
+    top = max((mt for mt, _ in files), default=0)
+    for mt, d in files:
+        if mt < top - 600:   # 최근 10분 안에 안 쓴 세션 값은 뺀다 — 11-17 같은 창인데 86%→22% 로 줄어(한도 초기화) 11-16 옛 86% 가 계속 이겼다
             continue
         for k in ("five_hour", "seven_day"):
             try:

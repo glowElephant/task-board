@@ -274,6 +274,8 @@ function groups() {
   }
   return gs.sort((a, b) => (a.key === 'txt') - (b.key === 'txt') || b.mine - a.mine || b.last - a.last);
 }
+// 예약 시각(`지금:` 줄에서 서버가 찾은 아직 안 온 시각) — 11-18 03:00
+const hm = ts => { const d = new Date(ts * 1000), z = n => String(n).padStart(2, '0'); return `${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}`; };
 function taskRow(t) {
   const on = (view === 'task' || view === 'raw') && cur && cur.id === t.id;
   const asks = (t.asks || []).slice(0, 3);
@@ -285,7 +287,7 @@ function taskRow(t) {
     t.now ? h('div', { className: 'now', textContent: '지금: ' + t.now }) : null,
     asks.length ? h('ul', { className: 'asks' }, asks.map(q => h('li', { textContent: q, title: q + ' — 누르면 이 질문으로', onclick: e => { e.stopPropagation(); go(t.id, q.split('.')[0]); } })),
       more > 0 ? h('li', { className: 'more', textContent: `외 ${more}개` }) : null) : null,
-    h('div', { className: 'when', textContent: when(t.mtime) + (t.unread && !t.listening ? ' · ⚠ 보냈는데 세션이 안 듣는 중' : t.stuck ? ' · ⚠ 세션이 멈춰 있음 — 지금 줄에 내 할 일이 있는지 확인' : t.mine ? '' : t.waiting ? ' · 세션이 반영 중' : ' · 내 차례 없음') }));
+    h('div', { className: 'when', textContent: when(t.mtime) + (t.unread && !t.listening ? ' · ⚠ 보냈는데 세션이 안 듣는 중' : t.stuck ? ' · ⚠ 세션이 멈춰 있음 — 지금 줄에 내 할 일이 있는지 확인' : t.mine ? '' : t.waiting ? ' · 세션이 반영 중' : t.until ? ` · 예약 ${hm(t.until)} 기다림` : ' · 내 차례 없음') }));
   b.onclick = () => go(t.id, t.mine && asks.length ? asks[0].split('.')[0] : null);   // 내 차례면 그 질문으로 바로
   return b;
 }
@@ -472,7 +474,7 @@ function renderTask() {
   const head = h('div', { className: 'top' },
     h('div', {}, backBtn(), h('h1', { textContent: t.title }),
       h('div', { className: 'meta' },
-        h('span', { className: 'pill ' + (doneNow ? 'done' : t.mine ? 'me' : 'claude'), textContent: doneNow ? '끝' : t.stuck ? '확인 필요 — 세션 멈춤' : t.mine ? `내 차례 ${t.mine}` : t.kind === 'txt' ? 'txt 문서' : '세션 차례' }),
+        h('span', { className: 'pill ' + (doneNow ? 'done' : t.mine ? 'me' : 'claude'), textContent: doneNow ? '끝' : t.stuck ? '확인 필요 — 세션 멈춤' : t.mine ? `내 차례 ${t.mine}` : t.until ? `예약 ${hm(t.until)}` : t.kind === 'txt' ? 'txt 문서' : '세션 차례' }),
         h('span', { textContent: t.session }), liveTag(t.live), h('span', { textContent: when(t.mtime) + ' 갱신' })),
       t.now && !doneNow ? h('div', { className: 'nowline' }, h('b', { textContent: '지금' }), t.now) : null),
     h('div', { className: 'actions' }, ...(t.kind === 'task' ? [
