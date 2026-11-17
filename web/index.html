@@ -83,6 +83,12 @@ aside { border-right: 1px solid var(--line); background: var(--surface); overflo
 .live { font-size: 11.5px; font-weight: 600; color: var(--done); white-space: nowrap; } .live.idle { color: var(--muted); font-weight: 400; }
 .nowline { margin-top: 6px; font-size: 14px; } .nowline b { color: var(--muted); font-weight: 600; margin-right: 6px; }
 .item.flash { box-shadow: 0 0 0 3px var(--me); }
+/* 객관식 단추 — 질문 설명의 A·B·C(서버 choices()). 누르면 답 칸에 글자가 들어가고 [보내기]로 보낸다 */
+.choices { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 8px; }
+.choice { border-radius: 999px; padding: 4px 12px; font-size: 13px; }
+.choice b { color: var(--me); margin-right: 3px; }
+.choice.rec { border-color: color-mix(in srgb, var(--me) 55%, var(--line)); }
+.choice.on { background: var(--me-soft); border-color: var(--me); }
 .trow .when { font-size: 11.5px; color: var(--muted); padding-left: 16px; font-variant-numeric: tabular-nums; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--wait); flex: none; margin-top: 6px; }
 .dot.me { background: var(--me); }
@@ -453,6 +459,19 @@ function thread(entries, tid) {
   return h('div', { className: 'thread' }, entries.map(e =>
     h('div', { className: 'say ' + e.who }, h('div', { className: 'who' }, e.who === 'me' ? '나' : '세션', e.at ? h('span', { className: 'at', textContent: e.at.slice(5) }) : null), h('div', { className: 'txt' }, md(e.text, tid)))));
 }
+// 고르면 답 칸 맨 앞 글자(A·B…)만 바꾸고 뒤에 쓴 말은 둔다 — "B 고칠 곳 적어 주세요" 같은 건 이어서 쓰고 [보내기]
+function choiceRow(cs, ta) {
+  const lead = /^[A-H](?![A-Za-z0-9])\s*/;
+  const row = h('div', { className: 'choices' }, cs.map(c => h('button', { type: 'button', className: 'choice' + (c.rec ? ' rec' : '') + (ta.value.match(lead)?.[0].trim() === c.key ? ' on' : ''),
+    title: c.key + ' ' + c.text, value: c.key,
+    onclick: () => {
+      const rest = ta.value.replace(lead, '');
+      ta.value = c.key + (rest ? ' ' + rest : '');
+      ta.dispatchEvent(new Event('input')); ta.focus();
+      row.querySelectorAll('.choice').forEach(x => x.classList.toggle('on', x.value === c.key));
+    } }, h('b', { textContent: c.key }), c.label + (c.rec ? ' · 추천' : ''))));
+  return row;
+}
 function itemCard(b, tid) {
   const label = { me: '내 차례', claude: '세션 차례', done: '결정' }[b.turn];
   const card = h('section', { className: 'item ' + b.turn, id: 'q-' + b.id },
@@ -463,8 +482,9 @@ function itemCard(b, tid) {
   const ed = editor('q:' + b.id, '', tid, b.turn === 'claude' ? '덧붙일 말이 있으면 — 세션이 아직 반영 전입니다' : '답을 적어 주세요 — 추천대로면 "ㅇㅋ"',
     text => api('/api/answer', { id: tid, item: b.id, text }),
     text => api('/api/answer', { id: tid, item: b.id, text, send: true }));
-  if (b.turn === 'done') card.append(h('details', { className: 'reopen' }, h('summary', { textContent: '다시 답하기' }), h('div', { className: 'answer' }, ed)));
-  else card.append(h('div', { className: 'answer' }, ed));
+  const ch = b.choices && b.choices.length ? choiceRow(b.choices, ed.querySelector('textarea')) : null;
+  if (b.turn === 'done') card.append(h('details', { className: 'reopen' }, h('summary', { textContent: '다시 답하기' }), h('div', { className: 'answer' }, ch, ed)));
+  else card.append(h('div', { className: 'answer' }, ch, ed));
   return card;
 }
 

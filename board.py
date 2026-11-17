@@ -216,6 +216,36 @@ def turn(status, ents):
     return "claude" if ents and ents[-1]["who"] == "me" else "me"
 
 
+OPT = re.compile(r"(?:^|(?<=\s))(?:[-*]\s+)?(\*\*)?([A-H])(?:\*\*)?\s+(?=\S)")
+
+
+def choices(desc):
+    """질문 설명의 선택지 → 화면의 객관식 단추(11-17 사용자 "객관식으로 선택할 수 있게"). 세션이 이미 쓰는 두 모양을 읽는다:
+    한 줄 `A 이름(추천) · B 이름 · C 이름`(첫 칸은 앞에 말이 있어도 됨), 또는 줄마다 `A 이름` / `**A 이름**`.
+    A 부터 차례로 둘 이상일 때만. 이름 = 굵은 글씨, 없으면 첫 `(`·`:`·`—`·`. ` 앞."""
+    segs = []
+    for ln in desc.split("\n"):
+        parts = re.split(r"\s+·\s+", ln)
+        for i, part in enumerate(parts):
+            m = (OPT.search if i == 0 and len(parts) > 1 else OPT.match)(part)
+            if m and (m.start() == 0 or len(parts) > 1):
+                segs.append((m.group(2), bool(m.group(1)), part[m.end():]))
+    out = []
+    for key, bold_open, rest in segs:
+        if key == "A":
+            if len(out) >= 2:
+                break
+            out = []
+        elif not out or ord(key) != ord(out[-1]["key"]) + 1:
+            continue
+        b = re.match(r"\*\*(.+?)\*\*", rest) or (bold_open and re.match(r"(.+?)\*\*", rest))
+        name = b.group(1) if b else re.split(r"\s*[(（:：]|\s+—|\.\s", rest, maxsplit=1)[0]
+        name = re.sub(r"\*\*|`", "", name).strip()
+        out.append({"key": key, "label": name[:28] + ("…" if len(name) > 28 else ""), "rec": "추천" in rest,
+                    "text": re.sub(r"\*\*|`", "", rest).strip()})
+    return out if len(out) >= 2 else []
+
+
 def parse(body):
     """본문 → 블록 목록: md / item(### [ ] Q1. 제목 ~ 다음 제목) / memo(## 메모 아래)."""
     lines = body.split("\n")
@@ -246,6 +276,7 @@ def parse(body):
             b["desc"] = "\n".join(desc).strip()
             b["entries"] = [{"who": e["who"], "text": e["text"]} for e in ents]
             b["turn"] = turn(b["status"], ents)
+            b["choices"] = choices(b["desc"])
         elif b["type"] == "memo":
             desc, ents = scan(lines)
             b["desc"] = "\n".join(desc).strip()

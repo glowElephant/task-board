@@ -221,3 +221,12 @@ assert _get("/files/" + _ur.quote("캐시") + "/img/a.png")[1]["Cache-Control"] 
 assert _get("/api/task?id=" + _ur.quote("없다"))[1]["Cache-Control"] == "no-store"
 _srv.shutdown()
 print("ok")
+
+# 객관식: 세션이 쓰는 두 모양(한 줄 A·B·C / 줄마다 A·B·C)을 단추로, A 부터 차례로 둘 이상일 때만
+_c = lambda d: [(c["key"], c["label"], c["rec"]) for c in board.choices(d)]
+assert _c('A **올림**(추천) · B 안드로이드 7 은 지켜야 함(그러면 "닿는 길 없음") · C 고칠 것 있음') == [("A", "올림", True), ("B", "안드로이드 7 은 지켜야 함", False), ("C", "고칠 것 있음", False)]
+assert _c("**A 일단 그대로 써 보기**(추천). 캐싱이 이미\n**B Tailscale**. PC·노트북·폰에\n  - PC 설치는 sudo\n**C 사내 망에서만 PC 로 바로 붙기**. 노트북") == [("A", "일단 그대로 써 보기", True), ("B", "Tailscale", False), ("C", "사내 망에서만 PC 로 바로 붙기", False)]
+assert _c("길이는 **A 3분 30초 안팎**(추천 — 지금) · B 4~5분(더 길게) · C 그대로") == [("A", "3분 30초 안팎", True), ("B", "4~5분", False), ("C", "그대로", False)]
+assert _c("A **파일 보내기**: 폰으로\nB **다른 곳에 쓰기**: 보고서\n  - 11/02 재부팅\nD 다른 일(적어 주세요)") == [("A", "파일 보내기", False), ("B", "다른 곳에 쓰기", False)]
+assert _c("플랜 A 로 가면 됩니다") == [] and _c("A 하나뿐") == [] and _c("B 먼저 · C 다음") == []
+print("choices ok")
