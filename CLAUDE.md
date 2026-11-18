@@ -111,6 +111,8 @@ board list; board url <작업>
   - 이 PC 배너 = 모든 작업이 진행 중 → 끝 으로 바뀌는 순간(`watch_done`, 문서 mtime 캐시) `popup.py` 를 띄운다(줄을 세워 하나씩). 서버 시작 때는 기록만.
     GNOME 알림이 아니라 직접 그린 창인 이유: 알림은 모양을 못 바꾼다. GTK3 + WebKit2 4.0 투명 창(X11·합성 관리자), 포커스를 안 뺏고(type hint NOTIFICATION, accept_focus False),
     누르면 그 작업 화면, 9초 뒤 닫힘(마우스 올리면 멈춤). 모양은 `web/popup.html` — 세션 이름 낱말로 이모지·색 셋·머리말(버그→🐞 "잡았다!", ci/cd→🚀 …), 모르는 이름은 해시 색.
+    ⚠ 화면(DISPLAY·XAUTHORITY)은 띄울 때마다 `systemctl --user show-environment` 에서 읽는다(`gui_env`) — 서버는 부팅 때 로그인보다 먼저 떠
+    DISPLAY 가 없다. 11-18 램 증설 재부팅 뒤 시작 때 한 번 본 값으로 배너가 꺼진 채 돌았다(기록도 없음). 화면이 없으면 `[배너] 화면 없음`.
     ⚠ popup.py 는 `WEBKIT_DISABLE_DMABUF_RENDERER=1`(GPU 없이 그림) — 11-15~17 그래픽 드라이버가 반쯤 바뀐 PC(재부팅 전)에서 WebKit 이
     "Could not create GBM EGL display" 로 죽어 배너가 이틀간 하나도 안 떴고, stderr 를 버려 아무도 몰랐다. 이제 실패는 서버 기록 `[배너] 실패`.
     시험은 화면에 안 띄우고 `python3 popup.py '<JSON>' --shot out.png 1500`(OffscreenWindow 스냅숏 — 헤드리스 크롬은 WebKit 과 달라 쓰지 않는다).

@@ -70,7 +70,7 @@ PUBLIC_PORT = int(CFG.get("BOARD_PUBLIC_PORT") or PORT + 1)
 PUBLIC_URL = CFG.get("BOARD_PUBLIC_URL", "").rstrip("/")
 LOGINS = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "board" / "logins.json"
 USAGE = pathlib.Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache") / "board" / "usage"   # 상태줄이 세션마다 남기는 한도 사용량
-POPUP = (CFG.get("BOARD_POPUP") or "1") != "0" and bool(os.environ.get("DISPLAY"))
+POPUP = (CFG.get("BOARD_POPUP") or "1") != "0"   # 화면(DISPLAY)은 띄울 때 gui_env() 가 본다
 KEEP = 90 * 86400                              # 한 번 로그인하면 3달(11-12 사용자 "최대 3달동안")
 _auth = {"code": "", "exp": 0.0, "tries": 0, "sent": []}   # 지금 코드(sha256)·만료·틀린 횟수·보낸 시각
 _auth_lock = threading.Lock()
@@ -626,13 +626,32 @@ def banner_theme(session):
         return {}
 
 
+def gui_env():
+    """배너 창을 띄울 환경 — 화면(DISPLAY·XAUTHORITY)은 띄울 때마다 systemd 사용자 환경에서 읽는다.
+    11-18: 서버가 부팅 때 로그인보다 먼저 떠서 DISPLAY 없이 시작했고, 시작 때 한 번 본 값으로 배너를 꺼 둔 채 돌았다(조용히 안 뜸)."""
+    env = dict(os.environ)
+    try:
+        out = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        out = ""
+    for ln in out.splitlines():
+        k, _, v = ln.partition("=")
+        if k in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY"):
+            env[k] = v
+    return env
+
+
 def pop_loop():
     """배너를 하나씩 — 둘이 겹치지 않게 앞의 것이 닫힌 뒤 다음 것."""
     here = pathlib.Path(__file__).resolve().parent
     while True:
         data = _pops.get()
+        env = gui_env()
+        if not env.get("DISPLAY"):
+            print(f"[배너] 화면 없음(로그인 전?) — {data.get('title')} 건너뜀", flush=True)
+            continue
         try:
-            r = subprocess.run([sys.executable, str(here / "popup.py"), json.dumps(data, ensure_ascii=False)],
+            r = subprocess.run([sys.executable, str(here / "popup.py"), json.dumps(data, ensure_ascii=False)], env=env,
                                timeout=60, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
             if r.returncode:   # 11-17: 버리던 오류 — 이틀 동안 배너가 안 뜬 걸 아무도 몰랐다
                 print(f"[배너] 실패 {r.returncode}: {(r.stderr or '').strip()[-300:]}", flush=True)
